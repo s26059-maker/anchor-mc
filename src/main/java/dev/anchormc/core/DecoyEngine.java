@@ -23,6 +23,9 @@ import java.util.random.RandomGenerator;
  */
 public final class DecoyEngine {
     private static final int PLANS_PER_PLAYER = 8192;
+    private static final double VERIFY_NEAR = 24.0;
+    private static final int VERIFY_FAR_EVERY = 10;
+    private long verifyCalls;
 
     private Params params;
     private final Function<String, BlockView> views;
@@ -56,9 +59,12 @@ public final class DecoyEngine {
         this.tracker = new ResponseTracker(params, new ResponseTracker.Hooks() {
             @Override
             public void outcome(Outcome o) {
-                if (o.result() != Result.VOID) {
-                    PlannedPair pp = pairsById.get(o.pairId());
-                    if (pp != null) {
+                PlannedPair pp = pairsById.get(o.pairId());
+                if (pp != null) {
+                    if (o.result() == Result.HIT || o.result() == Result.LATE_HIT) {
+                        pp.markHit();
+                    }
+                    if (o.result() == Result.HIT || o.result() == Result.MISS) {
                         pp.consume(o.result());
                     }
                 }
@@ -66,11 +72,15 @@ public final class DecoyEngine {
             }
 
             @Override
-            public void retired(Site s, boolean restoreBlock) {
+            public void retired(Site s, boolean restoreBlock, long tick) {
                 // restoreBlock=false는 클라이언트가 청크를 버린 것(다시 받으면 같은 미끼가 돌아온다). true는 노출 위험·캐짐·자격 상실:
                 // 진짜 블록으로 되돌렸으니 이 쌍은 다시 보내지 않는다.
                 if (restoreBlock && s.plan != null) {
                     s.plan.retire();
+                }
+                // 청크를 버렸다: 그동안 화면에 있던 시간을 쌍에 더한다(양쪽 자리가 같은 시간이라 미끼 쪽에서만 센다).
+                if (!restoreBlock && s.plan != null && s.kind == SiteKind.DECOY) {
+                    s.plan.addExposure(tick - s.registeredTick);
                 }
                 // 종류에 따라 달라지는 곳은 여기와 미끼를 내보내는 곳뿐이다(위약은 보낸 적이 없으니 되돌릴 것도 없다).
                 if (s.kind == SiteKind.DECOY && restoreBlock) {
@@ -109,6 +119,11 @@ public final class DecoyEngine {
      */
     public void setConsistentRevisit(boolean on) {
         this.consistentRevisit = on;
+    }
+
+    /** 높이 분포 보정을 끈다(대조군용, 시뮬레이터만 쓴다). */
+    public void setHeightBalance(boolean on) {
+        balance.setEnabled(on);
     }
 
     public ResponseTracker tracker() {
@@ -224,11 +239,19 @@ public final class DecoyEngine {
             // 자리는 종류와 무관한 순서(계획에서 뽑힌 순서)로 올린다.
             Site sa = new Site(p.id(), p.name(), pp.firstIsDecoy() ? SiteKind.DECOY : SiteKind.PLACEBO, pp.first(), pp.pairId, tick, pp);
             Site sb = new Site(p.id(), p.name(), pp.firstIsDecoy() ? SiteKind.PLACEBO : SiteKind.DECOY, pp.second(), pp.pairId, tick, pp);
+            sa.hitReported = pp.hitSeen();
+            sb.hitReported = pp.hitSeen();
             if (pp.consumed()) {
-                // 이미 한 번 증거에 쓰인 쌍: 미끼는 (일관성 때문에) 보이되 새 관측은 만들지 않는다. 노출되면 거둔다.
-                Site decoy = sa.kind == SiteKind.DECOY ? sa : sb;
-                decoy.result = pp.result();
-                tracker.add(decoy);
+                // 이미 한 번 증거에 쓰인 쌍: 판정은 다시 만들지 않는다(result가 채워져 있다). 미끼는 (일관성 때문에) 보이고,
+                // 아직 반응이 한 번도 없었으면 두 자리 모두 "먼저 반응한 쪽" 검정을 위해 계속 지켜본다. 노출되면 거둔다.
+                sa.result = pp.result();
+                sb.result = pp.result();
+                if (pp.hitSeen()) {
+                    tracker.add(sa.kind == SiteKind.DECOY ? sa : sb);
+                } else {
+                    tracker.add(sa);
+                    tracker.add(sb);
+                }
             } else {
                 tracker.add(sa);
                 tracker.add(sb);
@@ -263,8 +286,8 @@ public final class DecoyEngine {
         if (patch.isEmpty()) {
             return;
         }
-        if (!patch.decoyVoxels().isEmpty()) {
-            display.show(p.id(), patch.decoyVoxels());
+        for (PlannedPair pp : patch.pairs()) {
+            display.show(p.id(), pp.decoy()); // 뭉치마다(실제 패킷에서는 한 청크의 미끼가 함께 들어간다)
         }
         registerChunk(p, patch, tick);
     }
@@ -293,14 +316,27 @@ public final class DecoyEngine {
         tracker.blockChanging(block, tick);
     }
 
-    /** 이벤트 없이 바뀐 경우를 잡는 주기 검사. 뭉치의 어느 블록이든 여섯 면이 하나라도 뚫렸으면 즉시 뭉치째 거둔다. */
+    /**
+     * 이벤트 없이 바뀐 경우를 잡는 주기 검사. 뭉치의 어느 블록이든 여섯 면이 하나라도 뚫렸으면 즉시 뭉치째 거둔다.
+     * 밀도가 높으면 플레이어당 자리가 수천 개라 매번 전부 훑을 수 없다: 플레이어 24블록 안의 자리는 매번, 나머지는 10번에 한 번씩 돌아가며 본다.
+     * (블록 변경 이벤트가 있는 변화는 이 검사와 상관없이 변경 전에 회수된다. 이 검사는 월드에딧 같은 이벤트 없는 변화용이다.)
+     */
     public void verifyAll(long tick) {
+        long call = ++verifyCalls;
         for (Site s : tracker.allActive()) {
+            if ((s.pairId + call) % VERIFY_FAR_EVERY != 0 && !nearPlayer(s)) {
+                continue;
+            }
             BlockView v = views.apply(s.pos.world());
             if (v == null || !sealedAll(v, s.voxels)) {
                 tracker.retire(s, Result.VOID, tick, true);
             }
         }
+    }
+
+    private boolean nearPlayer(Site s) {
+        double[] p = tracker.lastPos(s.player);
+        return p != null && s.distanceTo(p[0], p[1], p[2]) < VERIFY_NEAR;
     }
 
     public void expire(long tick) {
@@ -313,7 +349,8 @@ public final class DecoyEngine {
 
     /** 플레이어가 나갔다: 추적과 계획 기억을 모두 지운다(다시 들어오면 같은 시드에서 같은 자리가 다시 계산된다). */
     public void forgetPlayer(UUID player, long tick) {
-        tracker.dropPlayer(player, tick, false);
+        tracker.dropPlayerFinal(player, tick);
+        tracker.forgetPosition(player);
         Map<ChunkPlan.Key, ChunkPlan> mine = plans.remove(player);
         if (mine != null) {
             synchronized (mine) {

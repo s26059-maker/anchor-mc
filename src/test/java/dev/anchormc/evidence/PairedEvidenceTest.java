@@ -12,6 +12,7 @@ import java.util.random.RandomGenerator;
 import java.util.random.RandomGeneratorFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -150,6 +151,68 @@ class PairedEvidenceTest {
     }
 
     @Test
+    void firstReactionCountsTheArmThatReactedFirstAndNeverWaitsForTheOtherArm() {
+        EvidenceEngine e = engine(EvidenceParams.defaults());
+        UUID id = UUID.randomUUID();
+        // 쌍 1: 미끼가 먼저 반응, 위약도 나중에 반응 → 미끼가 먼저 하나
+        e.observe(id, "a", true, true, 1);
+        e.observe(id, "a", false, true, 1);
+        // 쌍 2: 위약이 먼저 반응, 미끼는 MISS
+        e.observe(id, "a", false, true, 2);
+        e.observe(id, "a", true, false, 2);
+        // 쌍 3: 먼저 MISS가 나고 나중에 다른 쪽이 반응(멀어져서 MISS 판정된 뒤 반대쪽에 다가감) → 반응한 쪽이 먼저
+        e.observe(id, "a", true, false, 3);
+        e.observe(id, "a", false, true, 3);
+        // 쌍 4: 반응 없음 → 세지 않는다. 쌍 5: 미끼만 반응했는데 위약은 아직 판정 전(짝을 기다리지 않고 바로 센다)
+        e.observe(id, "a", true, false, 4);
+        e.observe(id, "a", false, false, 4);
+        e.observe(id, "a", true, true, 5);
+        var v = e.view("a");
+        assertEquals(2, v.firstDecoy(), "쌍 1과 5");
+        assertEquals(2, v.firstPlacebo(), "쌍 2와 3");
+        assertEquals(1, e.pendingPairs(), "쌍 5의 위약이 아직 안 끝났다");
+    }
+
+    /**
+     * 정직 계정: 쌍의 두 자리가 반응하는 시각이 강하게 상관돼 있고 계정마다 반응률이 크게 다르다. 미끼가 어느 쪽인지는 동전이다.
+     * "먼저 반응한 쪽" e-value는 P(언젠가 E ≥ x) ≤ 1/x를 지킨다(귀무에서 미끼가 먼저일 확률이 정확히 1/2).
+     */
+    @Test
+    void firstReactionEvalueIsValidForHonestPlayersWithCorrelatedReactions() {
+        RandomGenerator r = rng(71);
+        int accounts = 6000, pairs = 300;
+        double[] xs = {5, 20, 100};
+        int[] crossed = new int[xs.length];
+        for (int a = 0; a < accounts; a++) {
+            double base = 0.02 + 0.2 * r.nextDouble();
+            double[] logs = Mixture.newPairedLogs();
+            double mx = Double.NEGATIVE_INFINITY;
+            for (int i = 0; i < pairs; i++) {
+                boolean near = r.nextDouble() < base;              // 그 근처를 지나간다
+                double ta = near ? r.nextDouble() : Double.POSITIVE_INFINITY;
+                double tb = near && r.nextDouble() < 0.7 ? ta + r.nextDouble() * 0.5 + 1e-9 : (r.nextDouble() < base ? r.nextDouble() : Double.POSITIVE_INFINITY);
+                if (Double.isInfinite(ta) && Double.isInfinite(tb)) {
+                    continue;
+                }
+                boolean aIsDecoy = r.nextBoolean();                // 동전
+                boolean aFirst = ta < tb;
+                Mixture.observePaired(logs, aFirst == aIsDecoy);
+                mx = Math.max(mx, Mixture.logE(logs));
+            }
+            for (int k = 0; k < xs.length; k++) {
+                if (mx >= Math.log(xs[k])) {
+                    crossed[k]++;
+                }
+            }
+        }
+        for (int k = 0; k < xs.length; k++) {
+            double bound = 1 / xs[k];
+            double sd = Math.sqrt(bound * (1 - bound) / accounts);
+            assertTrue((double) crossed[k] / accounts <= bound + 3 * sd, "x=" + xs[k] + " 관측 " + (double) crossed[k] / accounts);
+        }
+    }
+
+    @Test
     void ruleBothNeedsBothEvidences() {
         EvidenceParams both = new EvidenceParams(1e-6, 2.0, 100, 1e-2, EvidenceParams.Rule.BOTH);
         EvidenceEngine e = engine(both);
@@ -176,6 +239,33 @@ class PairedEvidenceTest {
             }
         }
         assertEquals(1, confirmations);
+    }
+
+    @Test
+    void ruleBothCountsEachEvidenceOnceItHasEverCrossedEvenIfTheMixtureFallsBackLater() {
+        EvidenceParams both = new EvidenceParams(1e-6, 2.0, 100, 1e-2, EvidenceParams.Rule.BOTH);
+        EvidenceEngine e = engine(both);
+        for (int i = 0; i < 500; i++) {
+            e.observe(UUID.randomUUID(), "h" + i, false, i % 20 == 0);
+        }
+        UUID id = UUID.randomUUID();
+        for (int i = 0; i < 40; i++) { // 혼합이 문턱을 넘는다(쌍 정보 없음)
+            e.observe(id, "cheat", true, true);
+        }
+        assertTrue(e.view("cheat").log10E() > 6);
+        for (int i = 0; i < 400; i++) { // 이후 미끼에 반응 못 한 관측이 이어져 혼합 E가 문턱 아래로 내려간다
+            e.observe(id, "cheat", true, false);
+        }
+        assertTrue(e.view("cheat").log10E() < 6, "혼합이 내려가지 않았다: " + e.view("cheat").log10E());
+        assertFalse(e.view("cheat").confirmed());
+        int confirmations = 0;
+        for (long pair = 1; pair <= 40 && confirmations == 0; pair++) { // 먼저 반응한 쪽 증거가 쌓인다
+            if (e.observe(id, "cheat", true, true, pair) != null) {
+                confirmations++;
+            }
+            e.observe(id, "cheat", false, false, pair);
+        }
+        assertEquals(1, confirmations, "혼합이 한 번 넘었고 쌍 증거도 넘었으면 확정이다");
     }
 
     @Test
@@ -211,6 +301,14 @@ class PairedEvidenceTest {
             r.pairPlaceboOnly = 2;
             r.pairBoth = 1;
             r.pairNeither = 9;
+            r.firstDecoy = 7;
+            r.firstPlacebo = 3;
+            for (int i = 0; i < 7; i++) {
+                Mixture.observePaired(r.logsFirst, true);
+            }
+            for (int i = 0; i < 3; i++) {
+                Mixture.observePaired(r.logsFirst, false);
+            }
             for (int i = 0; i < 5; i++) {
                 Mixture.observePaired(r.logsPaired, true);
             }
@@ -221,6 +319,16 @@ class PairedEvidenceTest {
             AccountRecord r = s.load(id);
             assertEquals(5, r.pairDecoyOnly);
             assertEquals(9, r.pairNeither);
+            assertEquals(7, r.firstDecoy);
+            assertEquals(3, r.firstPlacebo);
+            double[] expectFirst = Mixture.newPairedLogs();
+            for (int i = 0; i < 7; i++) {
+                Mixture.observePaired(expectFirst, true);
+            }
+            for (int i = 0; i < 3; i++) {
+                Mixture.observePaired(expectFirst, false);
+            }
+            org.junit.jupiter.api.Assertions.assertArrayEquals(expectFirst, r.logsFirst, 0.0);
             double[] expect = Mixture.newPairedLogs();
             for (int i = 0; i < 5; i++) {
                 Mixture.observePaired(expect, true);

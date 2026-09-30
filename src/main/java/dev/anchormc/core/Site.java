@@ -12,10 +12,15 @@ public final class Site {
     public final Pos pos;
     public final List<Voxel> voxels;
     public final long pairId;
+    /** 이 자리가 추적에 올라온 틱. */
+    public final long registeredTick;
+    /** 판정 창의 시작 틱: 올라온 틱에서 이 쌍이 앞서 노출된 시간을 뺀 값이라, 청크를 버렸다 다시 받아도 노출 시간이 이어진다. */
     public final long createdTick;
     /** 이 자리가 속한 계획 쌍(테스트용 단독 자리는 null). */
     final PlannedPair plan;
     Result result;
+    /** 이 자리에서 반응(HIT)을 이미 알렸나(창 안의 HIT든 창이 끝난 뒤의 LATE_HIT든 한 번만). */
+    boolean hitReported;
     boolean active = true;
 
     Site(UUID player, String playerName, SiteKind kind, List<Voxel> voxels, long pairId, long createdTick, PlannedPair plan) {
@@ -25,7 +30,8 @@ public final class Site {
         this.voxels = List.copyOf(voxels);
         this.pos = voxels.get(0).pos();
         this.pairId = pairId;
-        this.createdTick = createdTick;
+        this.registeredTick = createdTick;
+        this.createdTick = createdTick - (plan == null ? 0 : plan.exposureTicks());
         this.plan = plan;
     }
 

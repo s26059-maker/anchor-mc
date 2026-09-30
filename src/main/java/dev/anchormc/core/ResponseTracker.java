@@ -17,13 +17,14 @@ public final class ResponseTracker {
         void outcome(Outcome o);
 
         /** 자리가 거둬졌을 때. restoreBlock=false면 클라이언트에 블록을 다시 보낼 필요 없음(청크 언로드). */
-        void retired(Site s, boolean restoreBlock);
+        void retired(Site s, boolean restoreBlock, long tick);
     }
 
     private Params params;
     private final Hooks hooks;
     private final Map<UUID, List<Site>> byPlayer = new HashMap<>();
     private final Map<Pos, List<Site>> byPos = new HashMap<>();
+    private final Map<UUID, double[]> lastPos = new HashMap<>();
 
     public ResponseTracker(Params params, Hooks hooks) {
         this.params = params;
@@ -51,8 +52,14 @@ public final class ResponseTracker {
         return out;
     }
 
+    /** 이 플레이어의 마지막으로 알려진 위치 {x, y, z}. 모르면 null. */
+    double[] lastPos(UUID player) {
+        return lastPos.get(player);
+    }
+
     /** 플레이어 위치가 바뀌었을 때. */
     public void observePosition(UUID player, String world, double x, double y, double z, long tick) {
+        lastPos.put(player, new double[] {x, y, z});
         List<Site> list = byPlayer.get(player);
         if (list == null) {
             return;
@@ -65,14 +72,22 @@ public final class ResponseTracker {
             if (d < params.retractDistance()) {
                 // 정상 플레이에선 오지 못하는 거리(밀착·노클립·텔레포트). 판정 전이면 제외하고 거둔다.
                 retire(s, Result.VOID, tick, true);
-            } else if (s.result == null) {
-                if (d <= params.reactionRadius()) {
-                    resolve(s, Result.HIT, tick);
-                } else if (d > params.giveUpDistance()) {
-                    // 판정만 하고 화면에서는 거두지 않는다: 진짜 광석은 멀어진다고 사라지지 않는다.
-                    resolve(s, Result.MISS, tick);
-                }
+            } else if (!s.hitReported && d <= params.reactionRadius()) {
+                react(s, tick);
+            } else if (s.result == null && d > params.giveUpDistance()) {
+                // 판정만 하고 화면에서는 거두지 않는다: 진짜 광석은 멀어진다고 사라지지 않는다.
+                resolve(s, Result.MISS, tick);
             }
+        }
+    }
+
+    /** 반응(HIT) 하나. 창 안이면 판정(HIT), 창이 끝난 뒤(MISS 판정 후)면 LATE_HIT로 알린다. 자리마다 한 번만. */
+    private void react(Site s, long tick) {
+        s.hitReported = true;
+        if (s.result == null) {
+            resolve(s, Result.HIT, tick);
+        } else {
+            emit(s, Result.LATE_HIT, tick);
         }
     }
 
@@ -83,9 +98,9 @@ public final class ResponseTracker {
             return;
         }
         for (Site s : new ArrayList<>(list)) {
-            if (s.active && s.result == null && s.pos.world().equals(block.world())
+            if (s.active && !s.hitReported && s.pos.world().equals(block.world())
                     && s.distanceTo(block.x() + 0.5, block.y() + 0.5, block.z() + 0.5) <= params.reactionRadius()) {
-                resolve(s, Result.HIT, tick);
+                react(s, tick);
             }
         }
     }
@@ -134,6 +149,11 @@ public final class ResponseTracker {
         return false;
     }
 
+    /** 이 플레이어의 위치 기억을 지운다(나갔을 때). */
+    void forgetPosition(UUID player) {
+        lastPos.remove(player);
+    }
+
     public void dropPlayer(UUID player, long tick, boolean restoreBlock) {
         List<Site> list = byPlayer.get(player);
         if (list != null) {
@@ -143,19 +163,32 @@ public final class ResponseTracker {
         }
     }
 
-    /** 서버가 청크를 내렸다: 모든 플레이어의 그 청크에 걸친 뭉치를 거둔다(클라이언트도 청크를 버리므로 되돌릴 필요 없음). */
+    /**
+     * 서버가 청크를 내렸다: 모든 플레이어의 그 청크에 걸친 뭉치의 추적을 접는다(클라이언트도 청크를 버리므로 되돌릴 필요 없음).
+     * 판정은 하지 않는다(미끼가 화면에서 노출된 시간이 멈출 뿐이다). 판정 전이던 쌍은 다시 받으면 이어서 시간이 쌓인다.
+     */
     public void dropChunk(String world, int cx, int cz, long tick) {
         for (Site s : allActive()) {
             if (s.touchesChunk(world, cx, cz)) {
-                retire(s, Result.VOID, tick, false);
+                retire(s, null, tick, false);
             }
         }
     }
 
-    /** 이 플레이어의 클라이언트가 청크를 버렸다. */
+    /** 이 플레이어의 클라이언트가 청크를 버렸다(위와 같다). */
     public void dropChunkFor(UUID player, String world, int cx, int cz, long tick) {
         for (Site s : new ArrayList<>(sitesOf(player))) {
             if (s.touchesChunk(world, cx, cz)) {
+                retire(s, null, tick, false);
+            }
+        }
+    }
+
+    /** 플레이어가 나갔다: 판정 전이던 자리는 증거에서 뺀다(VOID). */
+    public void dropPlayerFinal(UUID player, long tick) {
+        List<Site> list = byPlayer.get(player);
+        if (list != null) {
+            for (Site s : new ArrayList<>(list)) {
                 retire(s, Result.VOID, tick, false);
             }
         }
@@ -180,11 +213,16 @@ public final class ResponseTracker {
         for (Voxel v : s.voxels) {
             remove(byPos, v.pos(), s);
         }
-        hooks.retired(s, restoreBlock);
+        hooks.retired(s, restoreBlock, tick);
     }
 
     private void resolve(Site s, Result r, long tick) {
         s.result = r;
+        emit(s, r, tick);
+    }
+
+    /** 이 클래스가 종류(kind)를 읽는 유일한 곳: 그대로 Hooks로 넘길 뿐이다. */
+    private void emit(Site s, Result r, long tick) {
         hooks.outcome(new Outcome(s.player, s.playerName, s.kind, r, tick, s.pos, s.pairId));
     }
 

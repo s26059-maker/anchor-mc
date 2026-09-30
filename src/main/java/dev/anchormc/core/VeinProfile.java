@@ -61,6 +61,16 @@ public final class VeinProfile {
         }
     }
 
+    /** 표본 뭉치의 평균 최소 y(점검용). */
+    public double meanY() {
+        Sample[] snap = bank;
+        double sum = 0;
+        for (Sample s : snap) {
+            sum += s.y;
+        }
+        return snap.length == 0 ? Double.NaN : sum / snap.length;
+    }
+
     /** 표본 크기 히스토그램(1..maxBin, 마지막 칸은 그 이상). */
     public int[] sizeHistogram(int maxBin) {
         int[] h = new int[maxBin];

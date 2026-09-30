@@ -264,11 +264,12 @@ public final class AnchorPlugin extends JavaPlugin {
             return;
         }
         s.sendMessage(Component.text(String.format(Locale.ROOT,
-                "%s | 미끼 %d/%d (%s) | 위약 %d/%d (%s) | log10E=%.2f (문턱 %.1f) | 쌍: 미끼만 %d 위약만 %d 둘다 %d 없음 %d log10E쌍=%.2f | %s",
+                "%s | 미끼 %d/%d (%s) | 위약 %d/%d (%s) | log10E=%.2f (문턱 %.1f) | 쌍: 미끼만 %d 위약만 %d 둘다 %d 없음 %d log10E쌍=%.2f | 먼저 반응: 미끼 %d 위약 %d log10E=%.2f | %s",
                 v.name(), v.decoyHits(), v.decoyN(), pct(v.decoyRate()),
                 v.placeboHits(), v.placeboN(), pct(v.placeboRate()),
                 v.log10E(), -Math.log10(getConfig().getDouble("alpha", 1e-9)),
                 v.pairDecoyOnly(), v.pairPlaceboOnly(), v.pairBoth(), v.pairNeither(), v.log10EPaired(),
+                v.firstDecoy(), v.firstPlacebo(), v.log10EFirst(),
                 v.confirmed() ? "확정(섀도)" : "미확정")));
     }
 

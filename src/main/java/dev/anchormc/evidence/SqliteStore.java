@@ -46,6 +46,17 @@ public final class SqliteStore implements EvidenceStore {
                 st.execute("ALTER TABLE accounts ADD COLUMN " + c + " INTEGER NOT NULL DEFAULT 0");
             }
         }
+        for (String c : new String[] {"first_decoy", "first_placebo"}) {
+            if (!cols.contains(c)) {
+                st.execute("ALTER TABLE accounts ADD COLUMN " + c + " INTEGER NOT NULL DEFAULT 0");
+            }
+        }
+        if (!cols.contains("ever_flags")) {
+            st.execute("ALTER TABLE accounts ADD COLUMN ever_flags INTEGER NOT NULL DEFAULT 0");
+        }
+        if (!cols.contains("logs_first")) {
+            st.execute("ALTER TABLE accounts ADD COLUMN logs_first TEXT NOT NULL DEFAULT ''");
+        }
         if (!cols.contains("logs_paired")) {
             st.execute("ALTER TABLE accounts ADD COLUMN logs_paired TEXT NOT NULL DEFAULT ''");
         }
@@ -92,6 +103,10 @@ public final class SqliteStore implements EvidenceStore {
                 r.pairBoth = rs.getInt("pair_both");
                 r.pairNeither = rs.getInt("pair_neither");
                 parseInto(rs.getString("logs_paired"), r.logsPaired, "쌍 e-value");
+                r.ever = rs.getInt("ever_flags");
+                r.firstDecoy = rs.getInt("first_decoy");
+                r.firstPlacebo = rs.getInt("first_placebo");
+                parseInto(rs.getString("logs_first"), r.logsFirst, "먼저 반응 e-value");
                 r.confirmedAt = rs.getLong("confirmed_at");
                 return r;
             }
@@ -114,12 +129,13 @@ public final class SqliteStore implements EvidenceStore {
     @Override
     public synchronized void save(AccountRecord r) {
         String sql = "INSERT INTO accounts(uuid,name,decoy_n,decoy_hits,placebo_n,placebo_hits,logs,confirmed_at,"
-                + "pair_decoy_only,pair_placebo_only,pair_both,pair_neither,logs_paired)"
-                + " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,"
+                + "pair_decoy_only,pair_placebo_only,pair_both,pair_neither,logs_paired,first_decoy,first_placebo,logs_first,ever_flags)"
+                + " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,"
                 + " decoy_n=excluded.decoy_n, decoy_hits=excluded.decoy_hits, placebo_n=excluded.placebo_n,"
                 + " placebo_hits=excluded.placebo_hits, logs=excluded.logs, confirmed_at=excluded.confirmed_at,"
                 + " pair_decoy_only=excluded.pair_decoy_only, pair_placebo_only=excluded.pair_placebo_only,"
-                + " pair_both=excluded.pair_both, pair_neither=excluded.pair_neither, logs_paired=excluded.logs_paired";
+                + " pair_both=excluded.pair_both, pair_neither=excluded.pair_neither, logs_paired=excluded.logs_paired,"
+                + " first_decoy=excluded.first_decoy, first_placebo=excluded.first_placebo, logs_first=excluded.logs_first, ever_flags=excluded.ever_flags";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, r.id.toString());
             ps.setString(2, r.name);
@@ -134,6 +150,10 @@ public final class SqliteStore implements EvidenceStore {
             ps.setInt(11, r.pairBoth);
             ps.setInt(12, r.pairNeither);
             ps.setString(13, join(r.logsPaired));
+            ps.setInt(14, r.firstDecoy);
+            ps.setInt(15, r.firstPlacebo);
+            ps.setString(16, join(r.logsFirst));
+            ps.setInt(17, r.ever);
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException(e);

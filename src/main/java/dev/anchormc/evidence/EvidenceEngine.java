@@ -8,7 +8,7 @@ import java.util.function.LongSupplier;
 /**
  * 계정별 e-value 누적과 p0 추정.
  * 위약 반응은 전체 위약 반응률(p0 추정)과 계정 기록에만 쓰이고, 혼합 e-value는 미끼 반응으로만 쌓인다.
- * 쌍 정확 e-value는 (미끼, 위약) 쌍이 둘 다 판정된 뒤 한쪽만 반응한 쌍으로만 쌓인다(p0 불필요).
+ * 쌍 정확 e-value는 두 가지다(p0 불필요). 한쪽만 반응한 쌍(둘 다 판정된 뒤, 1.1단계 정의)과, 먼저 반응한 쪽(1.2단계, 확정 규칙은 이쪽).
  * 메인 스레드에서만 호출한다.
  */
 public final class EvidenceEngine {
@@ -19,7 +19,8 @@ public final class EvidenceEngine {
     /** /anchor status용 스냅샷. */
     public record View(String name, int decoyN, int decoyHits, int placeboN, int placeboHits,
                        double log10E, boolean confirmed, long confirmedAt,
-                       int pairDecoyOnly, int pairPlaceboOnly, int pairBoth, int pairNeither, double log10EPaired) {
+                       int pairDecoyOnly, int pairPlaceboOnly, int pairBoth, int pairNeither, double log10EPaired,
+                       int firstDecoy, int firstPlacebo, double log10EFirst) {
         public double decoyRate() {
             return decoyN == 0 ? Double.NaN : (double) decoyHits / decoyN;
         }
@@ -44,6 +45,8 @@ public final class EvidenceEngine {
     private final LongSupplier millis;
     private final Map<UUID, AccountRecord> cache = new HashMap<>();
     private final Map<Long, Pending> pending = new HashMap<>();
+    /** 먼저 반응한 쪽이 이미 센 쌍(쌍당 한 번). */
+    private final java.util.Set<Long> firstCounted = new java.util.HashSet<>();
     private long placeboN;
     private long placeboHits;
 
@@ -127,10 +130,39 @@ public final class EvidenceEngine {
                 }
             }
         }
+        // 먼저 반응한 쪽: 이 쌍에서 처음 나온 반응(HIT)이면 어느 쪽이 먼저였는지 센다. 두 자리 사이가 반응 반경의 두 배보다 멀어 같은 순간에 둘 다
+        // 반응할 수는 없다. 귀무에서 "미끼가 먼저"는 동전 때문에 정확히 1/2이고, 짝의 다른 쪽이 판정될 때까지 기다릴 필요가 없다.
+        countFirst(r, decoy, hit, pairId);
         Confirmation out = null;
         if (!r.confirmed() && meetsRule(r)) {
             r.confirmedAt = millis.getAsLong();
             out = new Confirmation(r.copy(), p0);
+        }
+        store.save(r);
+        return out;
+    }
+
+    private void countFirst(AccountRecord r, boolean decoy, boolean hit, long pairId) {
+        if (pairId != NO_PAIR && hit && firstCounted.add(pairId)) {
+            if (decoy) {
+                r.firstDecoy++;
+            } else {
+                r.firstPlacebo++;
+            }
+            Mixture.observePaired(r.logsFirst, decoy);
+        }
+    }
+
+    /**
+     * 판정 창이 끝난 뒤의 첫 반응(LATE_HIT). 혼합·한쪽만 반응 검정에는 안 쓰고 "먼저 반응한 쪽" 검정에만 센다.
+     */
+    public Confirmation observeLateHit(UUID id, String name, boolean decoy, long pairId) {
+        AccountRecord r = account(id, name);
+        countFirst(r, decoy, true, pairId);
+        Confirmation out = null;
+        if (!r.confirmed() && meetsRule(r)) {
+            r.confirmedAt = millis.getAsLong();
+            out = new Confirmation(r.copy(), currentP0());
         }
         store.save(r);
         return out;
@@ -147,12 +179,26 @@ public final class EvidenceEngine {
         }
     }
 
+    /** 지금의 e-value로 "한 번이라도 넘음" 표시를 갱신한다. */
+    private void updateEver(AccountRecord r) {
+        if ((r.ever & AccountRecord.EVER_MIX) == 0 && Mixture.logE(r.logs) >= Math.log(1 / params.alpha())) {
+            r.ever |= AccountRecord.EVER_MIX;
+        }
+        double first = Mixture.logE(r.logsFirst);
+        if ((r.ever & AccountRecord.EVER_FIRST_GUARD) == 0 && first >= Math.log(1 / params.pairedAlpha())) {
+            r.ever |= AccountRecord.EVER_FIRST_GUARD;
+        }
+        if ((r.ever & AccountRecord.EVER_FIRST_STRICT) == 0 && first >= Math.log(1 / params.alpha())) {
+            r.ever |= AccountRecord.EVER_FIRST_STRICT;
+        }
+    }
+
     private boolean meetsRule(AccountRecord r) {
-        boolean mix = Mixture.logE(r.logs) >= Math.log(1 / params.alpha());
+        updateEver(r);
         return switch (params.rule()) {
-            case MIXTURE -> mix;
-            case PAIRED -> Mixture.logE(r.logsPaired) >= Math.log(1 / params.alpha());
-            case BOTH -> mix && Mixture.logE(r.logsPaired) >= Math.log(1 / params.pairedAlpha());
+            case MIXTURE -> (r.ever & AccountRecord.EVER_MIX) != 0;
+            case PAIRED -> (r.ever & AccountRecord.EVER_FIRST_STRICT) != 0;
+            case BOTH -> (r.ever & AccountRecord.EVER_MIX) != 0 && (r.ever & AccountRecord.EVER_FIRST_GUARD) != 0;
         };
     }
 
@@ -179,7 +225,8 @@ public final class EvidenceEngine {
     private static View toView(AccountRecord r) {
         return new View(r.name, r.decoyN, r.decoyHits, r.placeboN, r.placeboHits,
                 r.log10E(), r.confirmed(), r.confirmedAt,
-                r.pairDecoyOnly, r.pairPlaceboOnly, r.pairBoth, r.pairNeither, r.log10EPaired());
+                r.pairDecoyOnly, r.pairPlaceboOnly, r.pairBoth, r.pairNeither, r.log10EPaired(),
+                r.firstDecoy, r.firstPlacebo, r.log10EFirst());
     }
 
     public Stats stats() {

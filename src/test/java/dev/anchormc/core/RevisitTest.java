@@ -159,7 +159,7 @@ class RevisitTest {
         InvariantTest.sendChunks(e, at(24, 24, 24), 0);
         Map<SiteKind, List<Pos>> first = siteMap(e);
         unloadAll(e, 1);
-        assertTrue(outs.stream().allMatch(o -> o.result() == Result.VOID));
+        assertTrue(outs.isEmpty(), "언로드는 판정이 아니다");
         InvariantTest.sendChunks(e, at(24, 24, 24), 2);
         assertEquals(first, siteMap(e));
         assertTrue(e.activeSites().stream().allMatch(s -> s.result() == null), "언로드로만 빠진 쌍은 새 관측으로 돌아와야 한다");

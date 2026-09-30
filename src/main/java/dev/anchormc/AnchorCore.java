@@ -51,6 +51,13 @@ public final class AnchorCore {
                 evidence.voidPair(o.pairId());
                 return;
             }
+            if (o.result() == Result.LATE_HIT) {
+                var lc = evidence.observeLateHit(o.player(), o.playerName(), o.kind() == SiteKind.DECOY, o.pairId());
+                if (lc != null) {
+                    onConfirm.accept(lc);
+                }
+                return;
+            }
             var c = evidence.observe(o.player(), o.playerName(), o.kind() == SiteKind.DECOY, o.result() == Result.HIT, o.pairId());
             if (c != null) {
                 onConfirm.accept(c);

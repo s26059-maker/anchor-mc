@@ -17,6 +17,7 @@ final class YBalance {
     private final int yMin;
     private final int bands;
     private final AtomicLongArray attempts, passes;
+    private volatile boolean enabled = true;
 
     YBalance(int yMin, int yMax) {
         this.yMin = yMin;
@@ -42,7 +43,14 @@ final class YBalance {
     }
 
     /** 조건을 통과한 후보를 받아들일까. */
+    void setEnabled(boolean on) {
+        this.enabled = on;
+    }
+
     boolean accept(int srcY, RandomGenerator rng) {
+        if (!enabled) {
+            return true;
+        }
         int b = band(srcY);
         if (attempts.get(b) < MIN_ATTEMPTS) {
             return true;

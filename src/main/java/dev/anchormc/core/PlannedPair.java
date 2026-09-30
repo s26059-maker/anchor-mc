@@ -15,6 +15,8 @@ public final class PlannedPair {
     private final boolean aDecoy;
     private volatile int state = ACTIVE;
     private volatile Result result;
+    private volatile long exposure;
+    private volatile boolean hitSeen;
 
     PlannedPair(long pairId, int slot, List<Voxel> a, List<Voxel> b, boolean aDecoy) {
         this.pairId = pairId;
@@ -56,6 +58,26 @@ public final class PlannedPair {
 
     public Result result() {
         return result;
+    }
+
+    /** 청크가 화면에 있었던 누적 틱(양쪽 자리가 같은 시간을 겪는다). 판정 창은 이 시간으로 잰다. */
+    long exposureTicks() {
+        return exposure;
+    }
+
+    void addExposure(long ticks) {
+        if (ticks > 0) {
+            exposure += ticks;
+        }
+    }
+
+    /** 이 쌍에서 (어느 쪽이든) 반응이 한 번이라도 나왔다. */
+    public boolean hitSeen() {
+        return hitSeen;
+    }
+
+    void markHit() {
+        hitSeen = true;
     }
 
     void consume(Result r) {

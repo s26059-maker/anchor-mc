@@ -221,11 +221,29 @@ class InvariantTest {
         // 이벤트 없이 이웃이 사라진다(월드에딧류)
         Pos v0 = victim.voxels.get(victim.voxels.size() - 1).pos();
         w.set(v0.x() + 1, v0.y(), v0.z(), GridWorld.AIR);
-        e.verifyAll(50);
+        for (int i = 0; i < 10; i++) { // 플레이어 위치를 모르는 먼 자리는 10번에 한 번씩 돌아가며 본다
+            e.verifyAll(50 + i);
+        }
         assertTrue(e.activeSites().stream().noneMatch(s -> s == victim), "재검사가 노출된 미끼를 거두지 않았다");
         for (Voxel v : victim.voxels) {
             assertFalse(d.shown.contains(v.pos()));
         }
+    }
+
+    @Test
+    void periodicVerifyChecksSitesNearThePlayerOnEveryCall() {
+        RandomGenerator r = rng(8);
+        GridWorld w = GridWorld.solid(48);
+        CheckingDisplay d = new CheckingDisplay(w);
+        DecoyEngine e = new DecoyEngine(params(), name -> w, d, o -> { }, r);
+        sendChunks(e, at(24, 24, 24), 0);
+        Site victim = e.activeSites().stream().filter(s -> s.kind == SiteKind.DECOY).findFirst().orElseThrow();
+        Pos v0 = victim.voxels.get(0).pos();
+        // 플레이어를 그 자리에서 8블록 떨어진 곳으로(노클립 거리 밖, 반응 반경 밖) 옮긴다.
+        e.onMove(PLAYER, W, v0.x() + 0.5 - 8, v0.y() + 0.5, v0.z() + 0.5, 1);
+        w.set(v0.x() + 1, v0.y(), v0.z(), GridWorld.AIR);
+        e.verifyAll(2); // 딱 한 번
+        assertFalse(victim.active(), "플레이어 가까이의 자리는 재검사 한 번에 거둬져야 한다");
     }
 
     @Test

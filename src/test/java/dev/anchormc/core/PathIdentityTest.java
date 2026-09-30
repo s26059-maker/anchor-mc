@@ -29,7 +29,7 @@ class PathIdentityTest {
         }
 
         @Override
-        public void retired(Site s, boolean restoreBlock) {
+        public void retired(Site s, boolean restoreBlock, long tick) {
             retired.add(s.pos + "/" + restoreBlock + "/" + s.result());
         }
     }

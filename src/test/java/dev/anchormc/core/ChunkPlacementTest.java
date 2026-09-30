@@ -88,7 +88,7 @@ class ChunkPlacementTest {
     }
 
     @Test
-    void playerChunkUnloadDropsThatChunksSitesWithoutSendingRestore() {
+    void playerChunkUnloadDropsThatChunksSitesWithoutSendingRestoreOrOutcome() {
         RandomGenerator r = rng(22);
         GridWorld w = GridWorld.solid(48);
         List<Outcome> outs = new ArrayList<>();
@@ -107,7 +107,7 @@ class ChunkPlacementTest {
         }
         assertTrue(e.activeSites().isEmpty());
         assertEquals(hidesBefore, d.hides, "클라이언트가 버린 청크에 되돌리기 패킷을 보냈다");
-        assertTrue(outs.stream().allMatch(o -> o.result() == Result.VOID));
+        assertTrue(outs.isEmpty(), "청크를 버렸다고 판정을 내면 안 된다(노출 시간이 멈출 뿐이다): " + outs);
     }
 
     @Test
@@ -168,5 +168,44 @@ class ChunkPlacementTest {
         assertFalse(outs.isEmpty());
         assertEquals(hides, d.hides, "시간이 지났다고 미끼를 화면에서 거두면 안 된다(사라지는 것이 단서가 된다)");
         assertFalse(e.activeSites().isEmpty(), "판정이 끝나도 노출 회수를 위해 추적은 남아야 한다");
+    }
+
+    @Test
+    void exposureTimeAccumulatesAcrossUnloadsAndBothArmsResolveMissTogether() {
+        RandomGenerator r = rng(28);
+        GridWorld w = GridWorld.solid(48);
+        List<Outcome> outs = new ArrayList<>();
+        // 창 1000틱. 300틱 보고 버리고, 400틱 보고 버린 뒤, 다시 받아 300틱이 더 지나면 노출 합계가 1000틱이라 MISS다.
+        Params p = new Params(3.0, 1000, 60.0, 2.0, 0, 63, 300, 1.0, 0);
+        DecoyEngine e = new DecoyEngine(p, name -> w, new TimedDisplay(), outs::add, r);
+        PlayerState pl = at(24, 24, 24);
+        e.onChunkSent(pl, 1, 1, 0);
+        int sites = e.activeSites().size();
+        assertEquals(2, sites);
+        e.dropChunkFor(PLAYER, W, 1, 1, 300);
+        assertTrue(outs.isEmpty());
+        e.onChunkSent(pl, 1, 1, 10_000);
+        e.expire(10_000 + 399);
+        assertTrue(outs.isEmpty(), "노출 시간이 아직 700틱이다");
+        e.dropChunkFor(PLAYER, W, 1, 1, 10_000 + 400);
+        e.onChunkSent(pl, 1, 1, 50_000);
+        e.expire(50_000 + 299);
+        assertTrue(outs.isEmpty(), "노출 시간이 아직 999틱이다");
+        e.expire(50_000 + 300);
+        assertEquals(2, outs.size(), "노출 시간이 창을 채우면 양쪽이 함께 판정돼야 한다");
+        assertTrue(outs.stream().allMatch(o -> o.result() == Result.MISS));
+        assertEquals(outs.get(0).pairId(), outs.get(1).pairId());
+    }
+
+    @Test
+    void quittingStillVoidsWhatWasNotJudged() {
+        RandomGenerator r = rng(29);
+        GridWorld w = GridWorld.solid(48);
+        List<Outcome> outs = new ArrayList<>();
+        DecoyEngine e = new DecoyEngine(params(), name -> w, new TimedDisplay(), outs::add, r);
+        InvariantTest.sendChunks(e, at(24, 24, 24), 0);
+        e.forgetPlayer(PLAYER, 5);
+        assertFalse(outs.isEmpty());
+        assertTrue(outs.stream().allMatch(o -> o.result() == Result.VOID));
     }
 }
