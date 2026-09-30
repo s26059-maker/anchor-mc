@@ -2,6 +2,9 @@ package dev.anchormc.core;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +44,11 @@ public final class DecoyEngine {
     private final Map<Long, PlannedPair> pairsById = new ConcurrentHashMap<>();
     private final AtomicLong visits = new AtomicLong();
     private volatile boolean consistentRevisit = true;
+    /** 관전자 등, 반응을 증거에 넣지 않을 플레이어(표시만 유지). */
+    private final Set<UUID> evidenceExcluded = ConcurrentHashMap.newKeySet();
+    /** 자격 상실로 화면에서만 거둔 쌍(플레이어별). 자격을 되찾으면 이미 클라이언트가 가진 청크에 다시 보여 준다. 메인 스레드에서만 쓴다. */
+    private final Map<UUID, Map<Long, PlannedPair>> suspended = new HashMap<>();
+    private long restored;
     private final Map<RetireCause, LongAdder> retireCounts = new EnumMap<>(RetireCause.class);
 
     /** 시뮬레이터·테스트용: 비밀 시드를 rng에서 뽑는다. */
@@ -65,6 +73,9 @@ public final class DecoyEngine {
         this.tracker = new ResponseTracker(params, new ResponseTracker.Hooks() {
             @Override
             public void outcome(Outcome o) {
+                if (evidenceExcluded.contains(o.player())) {
+                    return; // 관전자 상태의 반응은 증거는 물론 쌍 상태(판정·반응 표시)에도 넣지 않는다
+                }
                 PlannedPair pp = pairsById.get(o.pairId());
                 if (pp != null) {
                     if (o.result() == Result.HIT || o.result() == Result.LATE_HIT) {
@@ -93,6 +104,9 @@ public final class DecoyEngine {
                         if (s.kind == SiteKind.DECOY) {
                             s.plan.addExposure(tick - s.registeredTick);
                             count(why.cause()); // 쌍마다 미끼 자리가 하나라 쌍 단위로 센다
+                            if (why.cause() == RetireCause.INELIGIBLE) {
+                                suspended.computeIfAbsent(s.player, k -> new HashMap<>()).put(s.pairId, s.plan);
+                            }
                         }
                     }
                 }
@@ -176,11 +190,64 @@ public final class DecoyEngine {
 
     /** 주기적으로(예: 1초마다) 플레이어별로 호출. 위치 판정만 한다. 새 자리는 만들지 않는다. */
     public void tick(PlayerState p, long tick) {
+        setEvidenceExcluded(p.id(), p.spectator());
         if (!p.eligible()) {
             tracker.dropPlayer(p.id(), tick, true);
             return;
         }
+        restoreSuspended(p, tick);
         tracker.observePosition(p.id(), p.world(), p.x(), p.y(), p.z(), tick);
+    }
+
+    /** 이 플레이어의 반응을 증거에 넣지 않는다(관전자). 켜는 순간부터 판정·반응 표시 모두 무시한다. */
+    public void setEvidenceExcluded(UUID player, boolean excluded) {
+        if (excluded) {
+            evidenceExcluded.add(player);
+        } else {
+            evidenceExcluded.remove(player);
+        }
+    }
+
+    /** 자격을 되찾아 다시 보여 준 쌍의 총 수(/anchor stats). */
+    public long restoredPairs() {
+        return restored;
+    }
+
+    /**
+     * 자격을 되찾았다(리스폰·게임모드 복귀): 자격 상실 때 화면에서만 거둔 쌍을, 클라이언트가 아직 가진 청크에 블록 갱신(Display.show)으로 다시 보여 준다.
+     * 청크 재전송이 아니므로 이 경로는 불변식 1을 여기서 실제 월드로 다시 검사한다: 봉인됨만 보내고, 뚫렸으면 영구 회수, 모름(이웃 청크 로드 안 됨)이면 보내지 않고 계획만 둔다.
+     * 그 사이 클라이언트가 버린 청크의 쌍은 dropChunkFor가 이미 뺐다. 메인 스레드에서 부른다.
+     */
+    private void restoreSuspended(PlayerState p, long tick) {
+        Map<Long, PlannedPair> mine = suspended.get(p.id());
+        if (mine == null) {
+            return;
+        }
+        suspended.remove(p.id());
+        BlockView live = views.apply(p.world());
+        if (live == null) {
+            return;
+        }
+        for (PlannedPair pp : mine.values()) {
+            if (pp.retired() || tracker.hasPair(p.id(), pp.pairId)
+                    || !pp.decoy().get(0).pos().world().equals(p.world())) {
+                continue;
+            }
+            DecoyGuard.Seal bad = badSeal(live, pp);
+            if (bad.state() == DecoyGuard.State.BREACHED) {
+                if (pp.retire(new Reason(RetireCause.REGISTER_UNSEALED, "자격 회복 때 " + DecoyGuard.explain(live, bad), tick))) {
+                    count(RetireCause.REGISTER_UNSEALED);
+                }
+                continue;
+            }
+            if (!bad.sealed()) {
+                pp.note(new Reason(RetireCause.REGISTER_NOT_ALLOWED, "자격 회복 때 " + DecoyGuard.explain(live, bad), tick));
+                continue; // 다시 받는 청크에서 돌아온다
+            }
+            display.show(p.id(), pp.decoy());
+            track(p, pp, tick);
+            restored++;
+        }
     }
 
     // ---- 광맥 표본 학습(메인 스레드) ----
@@ -281,29 +348,38 @@ public final class DecoyEngine {
                 hideVoxels(p.id(), pp.decoy());
                 continue;
             }
-            if (tracker.hasPair(p.id(), pp.pairId)) {
-                continue; // 같은 청크가 다시 전송됐다(언로드 없이): 이미 추적 중
-            }
-            // 자리는 종류와 무관한 순서(계획에서 뽑힌 순서)로 올린다.
-            Site sa = new Site(p.id(), p.name(), pp.firstIsDecoy() ? SiteKind.DECOY : SiteKind.PLACEBO, pp.first(), pp.pairId, tick, pp);
-            Site sb = new Site(p.id(), p.name(), pp.firstIsDecoy() ? SiteKind.PLACEBO : SiteKind.DECOY, pp.second(), pp.pairId, tick, pp);
-            sa.hitReported = pp.hitSeen();
-            sb.hitReported = pp.hitSeen();
-            if (pp.consumed()) {
-                // 이미 한 번 증거에 쓰인 쌍: 판정은 다시 만들지 않는다(result가 채워져 있다). 미끼는 (일관성 때문에) 보이고,
-                // 아직 반응이 한 번도 없었으면 두 자리 모두 "먼저 반응한 쪽" 검정을 위해 계속 지켜본다. 노출되면 거둔다.
-                sa.result = pp.result();
-                sb.result = pp.result();
-                if (pp.hitSeen()) {
-                    tracker.add(sa.kind == SiteKind.DECOY ? sa : sb);
-                } else {
-                    tracker.add(sa);
-                    tracker.add(sb);
-                }
+            track(p, pp, tick);
+        }
+    }
+
+    /** 쌍을 추적에 올린다(이미 추적 중이면 아무것도 안 한다). */
+    private void track(PlayerState p, PlannedPair pp, long tick) {
+        if (tracker.hasPair(p.id(), pp.pairId)) {
+            return; // 같은 청크가 다시 전송됐다(언로드 없이): 이미 추적 중
+        }
+        Map<Long, PlannedPair> sus = suspended.get(p.id());
+        if (sus != null) {
+            sus.remove(pp.pairId);
+        }
+        // 자리는 종류와 무관한 순서(계획에서 뽑힌 순서)로 올린다.
+        Site sa = new Site(p.id(), p.name(), pp.firstIsDecoy() ? SiteKind.DECOY : SiteKind.PLACEBO, pp.first(), pp.pairId, tick, pp);
+        Site sb = new Site(p.id(), p.name(), pp.firstIsDecoy() ? SiteKind.PLACEBO : SiteKind.DECOY, pp.second(), pp.pairId, tick, pp);
+        sa.hitReported = pp.hitSeen();
+        sb.hitReported = pp.hitSeen();
+        if (pp.consumed()) {
+            // 이미 한 번 증거에 쓰인 쌍: 판정은 다시 만들지 않는다(result가 채워져 있다). 미끼는 (일관성 때문에) 보이고,
+            // 아직 반응이 한 번도 없었으면 두 자리 모두 "먼저 반응한 쪽" 검정을 위해 계속 지켜본다. 노출되면 거둔다.
+            sa.result = pp.result();
+            sb.result = pp.result();
+            if (pp.hitSeen()) {
+                tracker.add(sa.kind == SiteKind.DECOY ? sa : sb);
             } else {
                 tracker.add(sa);
                 tracker.add(sb);
             }
+        } else {
+            tracker.add(sa);
+            tracker.add(sb);
         }
     }
 
@@ -435,6 +511,9 @@ public final class DecoyEngine {
     }
 
     public void dropPlayer(UUID player, long tick, boolean restoreBlock) {
+        if (!restoreBlock) {
+            suspended.remove(player); // 월드를 옮겼다: 예전 월드의 쌍은 다시 보여 줄 수 없다
+        }
         tracker.dropPlayer(player, tick, restoreBlock);
     }
 
@@ -442,6 +521,8 @@ public final class DecoyEngine {
     public void forgetPlayer(UUID player, long tick) {
         tracker.dropPlayerFinal(player, tick);
         tracker.forgetPosition(player);
+        suspended.remove(player);
+        evidenceExcluded.remove(player);
         Map<ChunkPlan.Key, ChunkPlan> mine = plans.remove(player);
         if (mine != null) {
             synchronized (mine) {
@@ -453,11 +534,21 @@ public final class DecoyEngine {
     /** 서버가 청크를 내렸다. */
     public void dropChunk(String world, int cx, int cz, long tick) {
         tracker.dropChunk(world, cx, cz, tick);
+        suspended.keySet().forEach(id -> forgetSuspended(id, world, cx, cz));
+    }
+
+    private void forgetSuspended(UUID player, String world, int cx, int cz) {
+        Map<Long, PlannedPair> sus = suspended.get(player);
+        if (sus != null) {
+            sus.values().removeIf(pp -> pp.decoy().get(0).pos().world().equals(world)
+                    && pp.decoy().get(0).pos().chunkX() == cx && pp.decoy().get(0).pos().chunkZ() == cz);
+        }
     }
 
     /** 이 플레이어의 클라이언트가 청크를 버렸다(PlayerChunkUnloadEvent). */
     public void dropChunkFor(UUID player, String world, int cx, int cz, long tick) {
         tracker.dropChunkFor(player, world, cx, cz, tick);
+        forgetSuspended(player, world, cx, cz);
     }
 
     /** 플러그인 종료·리로드 시: 모든 미끼를 진짜 블록으로 되돌린다. */
