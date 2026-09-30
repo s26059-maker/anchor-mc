@@ -18,6 +18,7 @@ public final class PlannedPair {
     private volatile long exposure;
     private volatile boolean hitSeen;
     private volatile Reason reason;
+    private volatile Result decoyOutcome, placeboOutcome;
 
     PlannedPair(long pairId, int slot, List<Voxel> a, List<Voxel> b, boolean aDecoy) {
         this.pairId = pairId;
@@ -104,6 +105,19 @@ public final class PlannedPair {
         if (state != RETIRED) {
             reason = why;
         }
+    }
+
+    /** 각 자리에서 마지막으로 낸 판정(HIT/MISS/VOID/LATE_HIT). 없으면 null. /anchor debug가 보여 준다. */
+    void noteOutcome(boolean decoy, Result r) {
+        if (decoy) {
+            decoyOutcome = r;
+        } else {
+            placeboOutcome = r;
+        }
+    }
+
+    public String outcomesText() {
+        return "미끼=" + (decoyOutcome == null ? "없음" : decoyOutcome) + " 위약=" + (placeboOutcome == null ? "없음" : placeboOutcome);
     }
 
     /** 이 쌍이 마지막으로 거둬지거나 접힌 이유(한 번도 없으면 null). */

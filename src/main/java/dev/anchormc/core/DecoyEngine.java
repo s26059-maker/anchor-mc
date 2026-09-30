@@ -78,6 +78,7 @@ public final class DecoyEngine {
                 }
                 PlannedPair pp = pairsById.get(o.pairId());
                 if (pp != null) {
+                    pp.noteOutcome(o.kind() == SiteKind.DECOY, o.result());
                     if (o.result() == Result.HIT || o.result() == Result.LATE_HIT) {
                         pp.markHit();
                     }
@@ -441,6 +442,11 @@ public final class DecoyEngine {
 
     /** 플레이어가 블록을 깬다(변경 전). 반응을 먼저 기록하고, 그 다음 노출 처리로 미끼를 거둔다. */
     public void onPlayerBreak(UUID player, Pos block, long tick) {
+        // 순서 고정: 위치 기반 반응 판정 → 채굴 반응 판정 → 회수. 회수(변경 전 이벤트)는 반응이 기록된 같은 틱에 일어난다.
+        double[] at = tracker.lastPos(player);
+        if (at != null) {
+            tracker.observePosition(player, block.world(), at[0], at[1], at[2], tick);
+        }
         tracker.observeDig(player, block, tick);
         tracker.blockChanging(block, tick);
     }
@@ -609,6 +615,6 @@ public final class DecoyEngine {
                 status += " · 마지막 거둠 사유: " + reasonText(pp);
             }
         }
-        return new SiteDebug(kind, vs.get(0).pos(), vs.size(), status);
+        return new SiteDebug(kind, vs.get(0).pos(), vs.size(), status + " · 반응 기록: " + pp.outcomesText());
     }
 }

@@ -20,6 +20,9 @@ public final class ResponseTracker {
         void retired(Site s, boolean restoreBlock, long tick);
     }
 
+    /** 한 번의 위치 갱신으로 이만큼(블록) 넘게 움직였으면 걸어서 온 것이 아니라 순간이동으로 본다. */
+    static final double TELEPORT_JUMP = 4.0;
+
     private Params params;
     private final Hooks hooks;
     private final Map<UUID, List<Site>> byPlayer = new HashMap<>();
@@ -59,7 +62,9 @@ public final class ResponseTracker {
 
     /** 플레이어 위치가 바뀌었을 때. */
     public void observePosition(UUID player, String world, double x, double y, double z, long tick) {
-        lastPos.put(player, new double[] {x, y, z});
+        double[] prev = lastPos.put(player, new double[] {x, y, z});
+        // 걷거나 파서 온 이동(한 번에 TELEPORT_JUMP 이내)이면 반응 띠를 한 걸음에 건너뛰었어도 사람이 다가온 것이다.
+        boolean walked = prev != null && Math.sqrt(Math.pow(prev[0] - x, 2) + Math.pow(prev[1] - y, 2) + Math.pow(prev[2] - z, 2)) <= TELEPORT_JUMP;
         List<Site> list = byPlayer.get(player);
         if (list == null) {
             return;
@@ -70,7 +75,11 @@ public final class ResponseTracker {
             }
             double d = s.pos.world().equals(world) ? s.distanceTo(x, y, z) : Double.POSITIVE_INFINITY;
             if (d < params.retractDistance()) {
-                // 정상 플레이에선 오지 못하는 거리(밀착·노클립·텔레포트). 판정 전이면 제외하고 거둔다.
+                // 한 걸음에 반응 띠(retract~reaction)를 건너뛴 정상 이동이면 반응이 먼저다: 반응을 기록한 뒤 같은 틱에 거둔다.
+                // 텔레포트·노클립처럼 큰 점프로 밀착한 것은 정상 플레이가 아니라 판정 전이면 제외하고 거둔다.
+                if (walked && !s.hitReported && s.result == null) {
+                    react(s, tick);
+                }
                 retire(s, Result.VOID, tick, true, new Reason(RetireCause.TOO_CLOSE,
                         String.format(java.util.Locale.ROOT, "거리 %.2f < %.2f, 플레이어 (%.1f, %.1f, %.1f)", d, params.retractDistance(), x, y, z), tick));
             } else if (!s.hitReported && d <= params.reactionRadius()) {
