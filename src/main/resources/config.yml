@@ -1,0 +1,38 @@
+# anchor-mc 설정
+
+# 섀도 모드(기본 true): 절대 자동 처벌하지 않는다. 확정되면 로그와 관리자 알림(anchor.alert)만.
+# 이 버전에는 처벌 동작이 없어서 false로 바꿔도 똑같이 동작한다.
+shadow-mode: true
+
+# 반응 반경 r(블록). 플레이어(또는 캐는 블록)가 자리 중심에서 이 거리 안에 들어오면 반응 1. 2.5 이상.
+reaction-radius: 3.0
+# 판정 시간 창(초). 만든 뒤 이 시간 안에 반응이 없으면 0으로 확정하고 거둔다.
+window-seconds: 90
+# 이 거리보다 멀어지면 0으로 확정하고 거둔다(블록).
+give-up-distance: 40.0
+# 이 거리보다 가까이 오면(정상 플레이에선 불가능) 판정 전이면 증거에서 제외하고 거둔다.
+retract-distance: 2.0
+
+# e-value 확정 문턱은 E >= 1/alpha.
+alpha: 1.0e-9
+# p0 = (전체 위약 반응률) x 이 배수. 위약 반응이 0건이면 95% 상한에 곱한다.
+p0-multiplier: 2.0
+# 위약 관측이 이보다 적으면 p0를 상한(0.9)으로 두어 확정이 사실상 불가능하다.
+min-placebo-samples: 100
+
+# 미끼 밀도. 한 번에 (미끼, 위약) 한 쌍을 만든다.
+sites:
+  y-min: -64
+  y-max: 16
+  # 플레이어에서 이 거리 구간(블록)에 균등하게 뽑는다. min-distance > reaction-radius + 1.
+  min-distance: 6.0
+  max-distance: 24.0
+  # 플레이어당 동시에 유지하는 쌍의 최대 수와, 쌍 사이 최소 간격(초).
+  max-active-pairs: 3
+  cooldown-seconds: 15
+  # 조건에 맞는 좌표를 못 찾으면 이만큼 시도하고 포기(다음 주기에 다시).
+  max-attempts: 120
+
+storage:
+  # 플러그인 폴더 안의 SQLite 파일.
+  file: anchor.db

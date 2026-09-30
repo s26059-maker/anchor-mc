@@ -1,0 +1,19 @@
+name: AnchorMC
+version: ${version}
+main: dev.anchormc.plugin.AnchorPlugin
+api-version: "26.2"
+description: 가짜 광석 미끼 + 위약 대조 + e-value로 엑스레이 유저를 통계적으로 확정한다(섀도 모드).
+libraries:
+  - org.xerial:sqlite-jdbc:3.53.4.0
+commands:
+  anchor:
+    description: anchor-mc 관리 명령
+    usage: /anchor status <플레이어> | stats | reload
+    permission: anchor.admin
+permissions:
+  anchor.admin:
+    description: /anchor 명령 사용
+    default: op
+  anchor.alert:
+    description: 확정 알림 수신
+    default: op
