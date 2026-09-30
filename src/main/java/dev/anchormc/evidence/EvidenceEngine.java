@@ -113,9 +113,16 @@ public final class EvidenceEngine {
         if (r == null) {
             r = store.findByName(name);
         }
-        if (r == null) {
-            return null;
-        }
+        return r == null ? null : toView(r);
+    }
+
+    /** 이미 본 계정만(저장소는 안 봄). 시뮬레이터·호출이 잦은 곳용. 없으면 null. */
+    public View viewOf(UUID id) {
+        AccountRecord r = cache.get(id);
+        return r == null ? null : toView(r);
+    }
+
+    private static View toView(AccountRecord r) {
         return new View(r.name, r.decoyN, r.decoyHits, r.placeboN, r.placeboHits,
                 r.log10E(), r.confirmed(), r.confirmedAt);
     }
