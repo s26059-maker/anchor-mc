@@ -105,10 +105,10 @@ class PathIdentityTest {
             // 매번 새 엔진: 쿨다운·상한 영향 없이 쌍 하나씩.
             UUID id = new UUID(0, i);
             DecoyEngine e = new DecoyEngine(InvariantTest.params(), name -> w, new Display() {
-                public void show(UUID p, Pos pos, Host h) { }
-                public void hide(UUID p, Pos pos) { }
+                public void show(UUID p, java.util.List<Voxel> voxels) { }
+                public void hide(UUID p, java.util.List<Pos> positions) { }
             }, o -> { }, r);
-            e.tick(new PlayerState(id, "t", W, 32, 32, 32, true), 0);
+            e.onChunkSent(new PlayerState(id, "t", W, 32, 32, 32, true), 2, 2, 0);
             List<Site> s = e.activeSites();
             if (s.size() != 2) {
                 continue;

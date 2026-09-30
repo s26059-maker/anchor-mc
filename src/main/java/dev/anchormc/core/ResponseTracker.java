@@ -9,6 +9,7 @@ import java.util.UUID;
 /**
  * 반응 판정과 자리의 수명 관리. 미끼와 위약을 완전히 같은 코드로 처리한다:
  * 이 클래스는 Site.kind를 읽지 않는다(Hooks로 그대로 넘길 뿐).
+ * 자리는 블록 하나 이상의 뭉치다. 거리는 뭉치의 가장 가까운 블록 기준, 노출 검사는 뭉치의 모든 블록과 이웃 기준이다.
  */
 public final class ResponseTracker {
     public interface Hooks {
@@ -35,7 +36,9 @@ public final class ResponseTracker {
 
     void add(Site s) {
         byPlayer.computeIfAbsent(s.player, k -> new ArrayList<>()).add(s);
-        byPos.computeIfAbsent(s.pos, k -> new ArrayList<>(1)).add(s);
+        for (Voxel v : s.voxels) {
+            byPos.computeIfAbsent(v.pos(), k -> new ArrayList<>(1)).add(s);
+        }
     }
 
     public List<Site> sitesOf(UUID player) {
@@ -58,7 +61,7 @@ public final class ResponseTracker {
             if (!s.active) {
                 continue;
             }
-            double d = s.pos.world().equals(world) ? s.pos.distanceTo(x, y, z) : Double.POSITIVE_INFINITY;
+            double d = s.pos.world().equals(world) ? s.distanceTo(x, y, z) : Double.POSITIVE_INFINITY;
             if (d < params.retractDistance()) {
                 // 정상 플레이에선 오지 못하는 거리(밀착·노클립·텔레포트). 판정 전이면 제외하고 거둔다.
                 retire(s, Result.VOID, tick, true);
@@ -74,7 +77,7 @@ public final class ResponseTracker {
         }
     }
 
-    /** 플레이어가 블록을 캐려 할 때. 캐는 블록이 자리 반경 안이면 반응. 미끼는 이 직후 노출 처리로 거둬진다. */
+    /** 플레이어가 블록을 캐려 할 때. 캐는 블록이 뭉치 반경 안이면 반응. 미끼는 이 직후 노출 처리로 거둬진다. */
     public void observeDig(UUID player, Pos block, long tick) {
         List<Site> list = byPlayer.get(player);
         if (list == null) {
@@ -82,14 +85,14 @@ public final class ResponseTracker {
         }
         for (Site s : new ArrayList<>(list)) {
             if (s.active && s.result == null && s.pos.world().equals(block.world())
-                    && s.pos.distanceTo(block.x() + 0.5, block.y() + 0.5, block.z() + 0.5) <= params.reactionRadius()) {
+                    && s.distanceTo(block.x() + 0.5, block.y() + 0.5, block.z() + 0.5) <= params.reactionRadius()) {
                 resolve(s, Result.HIT, tick);
             }
         }
     }
 
     /**
-     * 이 좌표의 블록이 바뀌려 한다(변경 전에 호출). 그 자리와 여섯 이웃에 있는 자리는 노출될 수 있으므로 거둔다.
+     * 이 좌표의 블록이 바뀌려 한다(변경 전에 호출). 그 자리와 여섯 이웃에 블록이 있는 뭉치는 노출될 수 있으므로 통째로 거둔다.
      */
     public void blockChanging(Pos p, long tick) {
         if (byPos.isEmpty()) {
@@ -128,9 +131,19 @@ public final class ResponseTracker {
         }
     }
 
+    /** 서버가 청크를 내렸다: 모든 플레이어의 그 청크에 걸친 뭉치를 거둔다(클라이언트도 청크를 버리므로 되돌릴 필요 없음). */
     public void dropChunk(String world, int cx, int cz, long tick) {
         for (Site s : allActive()) {
-            if (s.pos.world().equals(world) && s.pos.chunkX() == cx && s.pos.chunkZ() == cz) {
+            if (s.touchesChunk(world, cx, cz)) {
+                retire(s, Result.VOID, tick, false);
+            }
+        }
+    }
+
+    /** 이 플레이어의 클라이언트가 청크를 버렸다. */
+    public void dropChunkFor(UUID player, String world, int cx, int cz, long tick) {
+        for (Site s : new ArrayList<>(sitesOf(player))) {
+            if (s.touchesChunk(world, cx, cz)) {
                 retire(s, Result.VOID, tick, false);
             }
         }
@@ -152,13 +165,15 @@ public final class ResponseTracker {
         }
         s.active = false;
         remove(byPlayer, s.player, s);
-        remove(byPos, s.pos, s);
+        for (Voxel v : s.voxels) {
+            remove(byPos, v.pos(), s);
+        }
         hooks.retired(s, restoreBlock);
     }
 
     private void resolve(Site s, Result r, long tick) {
         s.result = r;
-        hooks.outcome(new Outcome(s.player, s.playerName, s.kind, r, tick, s.pos));
+        hooks.outcome(new Outcome(s.player, s.playerName, s.kind, r, tick, s.pos, s.pairId));
     }
 
     private static <K> void remove(Map<K, List<Site>> m, K key, Site s) {

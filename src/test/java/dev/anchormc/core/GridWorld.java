@@ -5,7 +5,7 @@ import java.util.random.RandomGenerator;
 
 /** 테스트용 작은 월드. 범위 밖은 "로드 안 됨"(고체 아님)이다. */
 final class GridWorld implements BlockView {
-    static final byte AIR = 0, STONE = 1, DEEPSLATE = 2, GLASS = 3, SAND = 4;
+    static final byte AIR = 0, STONE = 1, DEEPSLATE = 2, GLASS = 3, SAND = 4, ORE = 5;
 
     final int size;
     final byte[] cells;
@@ -58,7 +58,17 @@ final class GridWorld implements BlockView {
     @Override
     public boolean isStableOpaque(int x, int y, int z) {
         byte c = get(x, y, z);
-        return c == STONE || c == DEEPSLATE;
+        return c == STONE || c == DEEPSLATE || c == ORE;
+    }
+
+    @Override
+    public boolean isDiamondOre(int x, int y, int z) {
+        return get(x, y, z) == ORE;
+    }
+
+    @Override
+    public boolean chunkLoaded(int cx, int cz) {
+        return cx >= 0 && cz >= 0 && cx * 16 < size && cz * 16 < size;
     }
 
     @Override

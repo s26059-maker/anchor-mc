@@ -88,14 +88,18 @@ public final class AnchorPlugin extends JavaPlugin {
         return w == null ? null : views.computeIfAbsent(world, k -> new BukkitBlockView(w));
     }
 
+    static PlayerState stateOf(Player p) {
+        GameMode gm = p.getGameMode();
+        boolean eligible = (gm == GameMode.SURVIVAL || gm == GameMode.ADVENTURE) && p.isOnline() && !p.isDead();
+        var l = p.getLocation();
+        return new PlayerState(p.getUniqueId(), p.getName(), l.getWorld().getName(), l.getX(), l.getY() + 1.0, l.getZ(), eligible);
+    }
+
+    /** 1초마다 위치 판정과 만료. 새 자리는 여기서 만들지 않는다(청크 전송 이벤트에서만). */
     private void secondTick() {
         long tick = now();
         for (Player p : Bukkit.getOnlinePlayers()) {
-            GameMode gm = p.getGameMode();
-            boolean eligible = (gm == GameMode.SURVIVAL || gm == GameMode.ADVENTURE) && p.isOnline() && !p.isDead();
-            var l = p.getLocation();
-            core.decoys.tick(new PlayerState(p.getUniqueId(), p.getName(), l.getWorld().getName(),
-                    l.getX(), l.getY() + 1.0, l.getZ(), eligible), tick);
+            core.decoys.tick(stateOf(p), tick);
         }
         core.decoys.expire(tick);
     }
@@ -125,18 +129,27 @@ public final class AnchorPlugin extends JavaPlugin {
                 c.getInt("sites.y-min", d.yMin()),
                 c.getInt("sites.y-max", d.yMax()),
                 c.getDouble("sites.min-distance", d.minDistance()),
-                c.getDouble("sites.max-distance", d.maxDistance()),
                 c.getInt("sites.max-active-pairs", d.maxActivePairs()),
                 Math.round(c.getDouble("sites.cooldown-seconds", d.cooldownTicks() / 20.0) * 20),
-                c.getInt("sites.max-attempts", d.maxAttempts()));
+                c.getInt("sites.max-attempts", d.maxAttempts()),
+                c.getDouble("sites.pairs-per-chunk", d.pairsPerChunk()),
+                c.getInt("sites.profile-samples", d.profileSamples()));
     }
 
     static EvidenceParams readEvidenceParams(FileConfiguration c) {
         EvidenceParams d = EvidenceParams.defaults();
+        EvidenceParams.Rule rule;
+        try {
+            rule = EvidenceParams.Rule.valueOf(c.getString("confirm-rule", d.rule().name()).toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("confirm-rule은 MIXTURE, PAIRED, BOTH 중 하나");
+        }
         return new EvidenceParams(
                 c.getDouble("alpha", d.alpha()),
                 c.getDouble("p0-multiplier", d.p0Multiplier()),
-                c.getInt("min-placebo-samples", d.minPlaceboSamples()));
+                c.getInt("min-placebo-samples", d.minPlaceboSamples()),
+                c.getDouble("paired-alpha", d.pairedAlpha()),
+                rule);
     }
 
     /** 1차 MVP에는 처벌 동작이 없다. false로 둬도 섀도 모드로 동작한다고 알린다. */
@@ -178,10 +191,11 @@ public final class AnchorPlugin extends JavaPlugin {
             return;
         }
         s.sendMessage(Component.text(String.format(Locale.ROOT,
-                "%s | 미끼 %d/%d (%s) | 위약 %d/%d (%s) | log10E=%.2f (문턱 %.1f) | %s",
+                "%s | 미끼 %d/%d (%s) | 위약 %d/%d (%s) | log10E=%.2f (문턱 %.1f) | 쌍: 미끼만 %d 위약만 %d 둘다 %d 없음 %d log10E쌍=%.2f | %s",
                 v.name(), v.decoyHits(), v.decoyN(), pct(v.decoyRate()),
                 v.placeboHits(), v.placeboN(), pct(v.placeboRate()),
                 v.log10E(), -Math.log10(getConfig().getDouble("alpha", 1e-9)),
+                v.pairDecoyOnly(), v.pairPlaceboOnly(), v.pairBoth(), v.pairNeither(), v.log10EPaired(),
                 v.confirmed() ? "확정(섀도)" : "미확정")));
     }
 

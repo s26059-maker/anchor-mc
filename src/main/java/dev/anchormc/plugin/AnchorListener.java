@@ -2,6 +2,8 @@ package dev.anchormc.plugin;
 
 import dev.anchormc.core.DecoyEngine;
 import dev.anchormc.core.Pos;
+import io.papermc.paper.event.packet.PlayerChunkLoadEvent;
+import io.papermc.paper.event.packet.PlayerChunkUnloadEvent;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
@@ -113,6 +115,26 @@ final class AnchorListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFade(BlockFadeEvent e) {
         changing(e.getBlock());
+    }
+
+    /**
+     * 플레이어에게 청크가 전송될 때(Paper 문서: "Is called when a Player receives a Chunk"). 여기서만 새 쌍을 만들고
+     * 미끼는 즉시 보낸다. 진짜 광석은 이 청크 데이터에 이미 들어 있으니, 미끼가 "나중에 나타나는" 경로는 없다.
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onChunkSent(PlayerChunkLoadEvent e) {
+        Player p = e.getPlayer();
+        if (!p.getWorld().equals(e.getChunk().getWorld())) {
+            return;
+        }
+        engine.onChunkSent(AnchorPlugin.stateOf(p), e.getChunk().getX(), e.getChunk().getZ(), now());
+    }
+
+    /** 플레이어의 클라이언트가 청크를 버렸다: 그 청크의 자리는 되돌릴 필요 없이 정리한다. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onChunkDropped(PlayerChunkUnloadEvent e) {
+        engine.dropChunkFor(e.getPlayer().getUniqueId(), e.getChunk().getWorld().getName(),
+                e.getChunk().getX(), e.getChunk().getZ(), now());
     }
 
     @EventHandler

@@ -18,7 +18,7 @@ import java.util.random.RandomGenerator;
 
 /**
  * 배치 엔진과 증거 엔진을 잇는다. 플러그인과 시뮬레이터가 같은 배선을 쓴다.
- * 판정된 HIT/MISS만 증거로 가고 VOID는 세기만 한다.
+ * 판정된 HIT/MISS만 증거로 가고 VOID는 세기만 한다. VOID가 난 쌍은 쌍 정확 검정에서도 통째로 뺀다.
  */
 public final class AnchorCore {
     public final DecoyEngine decoys;
@@ -33,9 +33,10 @@ public final class AnchorCore {
         this.decoys = new DecoyEngine(params, views, display, (Outcome o) -> {
             if (o.result() == Result.VOID) {
                 voided++;
+                evidence.voidPair(o.pairId());
                 return;
             }
-            var c = evidence.observe(o.player(), o.playerName(), o.kind() == SiteKind.DECOY, o.result() == Result.HIT);
+            var c = evidence.observe(o.player(), o.playerName(), o.kind() == SiteKind.DECOY, o.result() == Result.HIT, o.pairId());
             if (c != null) {
                 onConfirm.accept(c);
             }

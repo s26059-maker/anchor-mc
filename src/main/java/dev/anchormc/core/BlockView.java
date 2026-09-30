@@ -10,4 +10,14 @@ public interface BlockView {
 
     /** 미끼가 들어갈 수 있는 돌 계열이면 그 종류, 아니면 null. 로드되지 않은 곳도 null. */
     Host hostAt(int x, int y, int z);
+
+    /** 진짜 다이아 광석(일반·심층)이면 true. 광맥 표본 추출과 "진짜 광석에 붙지 않기" 검사에 쓴다. */
+    default boolean isDiamondOre(int x, int y, int z) {
+        return false;
+    }
+
+    /** 그 청크가 로드돼 있으면 true. */
+    default boolean chunkLoaded(int cx, int cz) {
+        return true;
+    }
 }

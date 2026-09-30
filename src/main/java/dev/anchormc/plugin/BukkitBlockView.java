@@ -35,6 +35,17 @@ final class BukkitBlockView implements BlockView {
     }
 
     @Override
+    public boolean isDiamondOre(int x, int y, int z) {
+        Material m = typeAt(x, y, z);
+        return m == Material.DIAMOND_ORE || m == Material.DEEPSLATE_DIAMOND_ORE;
+    }
+
+    @Override
+    public boolean chunkLoaded(int cx, int cz) {
+        return world.isChunkLoaded(cx, cz);
+    }
+
+    @Override
     public Host hostAt(int x, int y, int z) {
         Material m = typeAt(x, y, z);
         if (m == Material.STONE) {
