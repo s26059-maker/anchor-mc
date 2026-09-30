@@ -1,0 +1,9 @@
+.gradle/
+build/
+*.db
+run/
+.idea/
+gradle-*-bin.zip
+g.zip
+p.jar
+.gradle-dist/
