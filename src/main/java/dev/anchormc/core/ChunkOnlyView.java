@@ -34,6 +34,11 @@ public final class ChunkOnlyView implements BlockView {
     }
 
     @Override
+    public String describe(int x, int y, int z) {
+        return in(x, z) ? base.describe(x, y, z) : "블록=(이 시야 밖)";
+    }
+
+    @Override
     public boolean chunkLoaded(int c1, int c2) {
         return c1 == cx && c2 == cz;
     }

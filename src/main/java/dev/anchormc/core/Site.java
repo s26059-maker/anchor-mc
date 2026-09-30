@@ -22,6 +22,10 @@ public final class Site {
     /** 이 자리에서 반응(HIT)을 이미 알렸나(창 안의 HIT든 창이 끝난 뒤의 LATE_HIT든 한 번만). */
     boolean hitReported;
     boolean active = true;
+    /** 거둘 때 남긴 사유(거두기 전에는 null). */
+    Reason reason;
+    /** 주기 검사가 이웃 청크를 몰라 판단을 보류 중이면 그 설명, 아니면 null. */
+    String held;
 
     Site(UUID player, String playerName, SiteKind kind, List<Voxel> voxels, long pairId, long createdTick, PlannedPair plan) {
         this.player = player;

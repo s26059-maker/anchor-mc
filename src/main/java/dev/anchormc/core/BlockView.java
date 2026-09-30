@@ -16,6 +16,11 @@ public interface BlockView {
         return false;
     }
 
+    /** 회수 사유 기록용: 그 좌표의 블록을 사람이 읽을 수 있게 설명한다(플러그인은 재질 이름을 돌려준다). */
+    default String describe(int x, int y, int z) {
+        return isStableOpaque(x, y, z) ? "블록=불투명 고체" : "블록=불투명 고체 아님";
+    }
+
     /** 그 청크가 로드돼 있으면 true. */
     default boolean chunkLoaded(int cx, int cz) {
         return true;

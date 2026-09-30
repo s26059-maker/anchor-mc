@@ -17,6 +17,7 @@ public final class PlannedPair {
     private volatile Result result;
     private volatile long exposure;
     private volatile boolean hitSeen;
+    private volatile Reason reason;
 
     PlannedPair(long pairId, int slot, List<Voxel> a, List<Voxel> b, boolean aDecoy) {
         this.pairId = pairId;
@@ -80,14 +81,33 @@ public final class PlannedPair {
         hitSeen = true;
     }
 
-    void consume(Result r) {
+    // 상태 전이는 메인 스레드(추적)와 패킷 스레드(prepareChunk)가 함께 건드린다: 전이는 한 자물쇠 아래서 하고, RETIRED는 끝 상태다.
+    synchronized void consume(Result r) {
         if (state == ACTIVE) {
             result = r;
             state = CONSUMED;
         }
     }
 
-    void retire() {
+    /** 다시 보내지 않도록 접는다. 처음 접었으면 true(사유 집계를 한 번만 하려고). */
+    synchronized boolean retire(Reason why) {
+        reason = why;
+        if (state == RETIRED) {
+            return false;
+        }
         state = RETIRED;
+        return true;
+    }
+
+    /** 영구 회수가 아닌 거둠(자격 상실·청크 언로드 등)의 마지막 사유. 계획은 그대로다. */
+    void note(Reason why) {
+        if (state != RETIRED) {
+            reason = why;
+        }
+    }
+
+    /** 이 쌍이 마지막으로 거둬지거나 접힌 이유(한 번도 없으면 null). */
+    public Reason reason() {
+        return reason;
     }
 }

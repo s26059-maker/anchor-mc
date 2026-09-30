@@ -1,12 +1,14 @@
 package dev.anchormc.core;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.random.RandomGenerator;
@@ -39,6 +41,7 @@ public final class DecoyEngine {
     private final Map<Long, PlannedPair> pairsById = new ConcurrentHashMap<>();
     private final AtomicLong visits = new AtomicLong();
     private volatile boolean consistentRevisit = true;
+    private final Map<RetireCause, LongAdder> retireCounts = new EnumMap<>(RetireCause.class);
 
     /** 시뮬레이터·테스트용: 비밀 시드를 rng에서 뽑는다. */
     public DecoyEngine(Params params, Function<String, BlockView> views, Display display,
@@ -56,6 +59,9 @@ public final class DecoyEngine {
         this.profile = new VeinProfile(params.profileSamples());
         this.balance = new YBalance(params.yMin(), params.yMax());
         this.planner = new PairPlanner(seeds, profile, balance, params);
+        for (RetireCause c : RetireCause.values()) {
+            retireCounts.put(c, new LongAdder());
+        }
         this.tracker = new ResponseTracker(params, new ResponseTracker.Hooks() {
             @Override
             public void outcome(Outcome o) {
@@ -73,14 +79,22 @@ public final class DecoyEngine {
 
             @Override
             public void retired(Site s, boolean restoreBlock, long tick) {
-                // restoreBlock=false는 클라이언트가 청크를 버린 것(다시 받으면 같은 미끼가 돌아온다). true는 노출 위험·캐짐·자격 상실:
-                // 진짜 블록으로 되돌렸으니 이 쌍은 다시 보내지 않는다.
-                if (restoreBlock && s.plan != null) {
-                    s.plan.retire();
-                }
-                // 청크를 버렸다: 그동안 화면에 있던 시간을 쌍에 더한다(양쪽 자리가 같은 시간이라 미끼 쪽에서만 센다).
-                if (!restoreBlock && s.plan != null && s.kind == SiteKind.DECOY) {
-                    s.plan.addExposure(tick - s.registeredTick);
+                Reason why = s.reason;
+                // 사유가 영구 회수(노출 위험·바뀐 월드)면 이 쌍은 다시 보내지 않는다. 자격 상실·청크 언로드처럼 영구가 아니면
+                // 화면에서만 거두고 계획은 남긴다(다시 받으면 같은 미끼가 돌아온다).
+                if (s.plan != null && why != null) {
+                    if (why.cause().permanent()) {
+                        if (s.plan.retire(why)) {
+                            count(why.cause()); // 쌍을 처음 접은 자리(미끼든 위약이든)가 센다
+                        }
+                    } else {
+                        s.plan.note(why);
+                        // 그동안 화면에 있던 시간을 쌍에 더한다(양쪽 자리가 같은 시간이라 미끼 쪽에서만 센다).
+                        if (s.kind == SiteKind.DECOY) {
+                            s.plan.addExposure(tick - s.registeredTick);
+                            count(why.cause()); // 쌍마다 미끼 자리가 하나라 쌍 단위로 센다
+                        }
+                    }
                 }
                 // 종류에 따라 달라지는 곳은 여기와 미끼를 내보내는 곳뿐이다(위약은 보낸 적이 없으니 되돌릴 것도 없다).
                 if (s.kind == SiteKind.DECOY && restoreBlock) {
@@ -92,6 +106,28 @@ public final class DecoyEngine {
                 }
             }
         });
+    }
+
+    private void count(RetireCause c) {
+        retireCounts.get(c).increment();
+    }
+
+    /** 사유별 회수 횟수(쌍 단위). /anchor stats가 쓴다. 모든 사유가 들어 있다(없으면 0). */
+    public Map<RetireCause, Long> retireCounts() {
+        Map<RetireCause, Long> out = new EnumMap<>(RetireCause.class);
+        retireCounts.forEach((c, n) -> out.put(c, n.sum()));
+        return out;
+    }
+
+    /** 주기 검사가 이웃 청크를 몰라 판단을 보류 중인 활성 자리 수. */
+    public int heldSites() {
+        int n = 0;
+        for (Site s : tracker.allActive()) {
+            if (s.held != null) {
+                n++;
+            }
+        }
+        return n;
     }
 
     private static byte[] secretFrom(RandomGenerator rng) {
@@ -178,8 +214,11 @@ public final class DecoyEngine {
                 continue; // 이미 회수됐다: 다시 보내지 않는다
             }
             // 불변식 1을 패킷 경로에도 강제한다: 지금 보내는 데이터에서도 봉인돼 있지 않으면 이 쌍은 영영 접는다.
-            if (!sealedAll(chunkView, pp.decoy()) || !sealedAll(chunkView, pp.placebo())) {
-                pp.retire();
+            DecoyGuard.Seal bad = badSeal(chunkView, pp);
+            if (!bad.sealed()) {
+                if (pp.retire(new Reason(RetireCause.PACKET_UNSEALED, DecoyGuard.explain(chunkView, bad), -1))) {
+                    count(RetireCause.PACKET_UNSEALED);
+                }
                 continue;
             }
             live.add(pp);
@@ -226,9 +265,18 @@ public final class DecoyEngine {
                 hideVoxels(p.id(), pp.decoy());
                 continue;
             }
-            if (!allowed || !sealedAll(live, pp.decoy()) || !sealedAll(live, pp.placebo())) {
-                if (allowed) {
-                    pp.retire(); // 월드가 바뀌어 봉인이 깨졌다: 다시 보내지 않는다
+            if (!allowed) {
+                pp.note(new Reason(RetireCause.REGISTER_NOT_ALLOWED,
+                        "자격=" + p.eligible() + ", 월드 " + p.world() + " / 패킷 " + patch.world(), tick));
+                count(RetireCause.REGISTER_NOT_ALLOWED);
+                hideVoxels(p.id(), pp.decoy());
+                continue;
+            }
+            DecoyGuard.Seal bad = badSeal(live, pp);
+            if (bad.state() == DecoyGuard.State.BREACHED) {
+                // 월드가 바뀌어 봉인이 깨졌다: 다시 보내지 않는다. (모름이면 판단을 보류하고 추적한다: 이미 패킷 시야에서 봉인이 확인됐다)
+                if (pp.retire(new Reason(RetireCause.REGISTER_UNSEALED, DecoyGuard.explain(live, bad), tick))) {
+                    count(RetireCause.REGISTER_UNSEALED);
                 }
                 hideVoxels(p.id(), pp.decoy());
                 continue;
@@ -292,6 +340,16 @@ public final class DecoyEngine {
         registerChunk(p, patch, tick);
     }
 
+    /** 쌍의 두 뭉치 전체의 검사 결과(뚫림이 모름보다 우선). */
+    private static DecoyGuard.Seal badSeal(BlockView view, PlannedPair pp) {
+        DecoyGuard.Seal a = DecoyGuard.checkAll(view, pp.decoy());
+        if (a.state() == DecoyGuard.State.BREACHED) {
+            return a;
+        }
+        DecoyGuard.Seal b = DecoyGuard.checkAll(view, pp.placebo());
+        return b.state() == DecoyGuard.State.BREACHED || a.sealed() ? b : a;
+    }
+
     static boolean sealedAll(BlockView view, List<Voxel> voxels) {
         for (Voxel v : voxels) {
             if (!DecoyGuard.sealed(view, v.pos())) {
@@ -327,9 +385,42 @@ public final class DecoyEngine {
             if ((s.pairId + call) % VERIFY_FAR_EVERY != 0 && !nearPlayer(s)) {
                 continue;
             }
-            BlockView v = views.apply(s.pos.world());
-            if (v == null || !sealedAll(v, s.voxels)) {
-                tracker.retire(s, Result.VOID, tick, true);
+            verifySite(s, tick, RetireCause.PERIODIC_BREACH);
+        }
+    }
+
+    /**
+     * 자리 하나를 검사한다. 뚫렸으면 거둔다. 이웃 청크가 로드돼 있지 않아 블록을 모르면 판단을 보류한다(거두지 않는다):
+     * 미끼는 이미 패킷 시야에서 봉인이 확인된 채 나갔고, 모르는 이웃이 나중에 로드되면 그때 다시 검사한다({@link #onChunkLoaded}).
+     */
+    private void verifySite(Site s, long tick, RetireCause cause) {
+        BlockView v = views.apply(s.pos.world());
+        if (v == null) {
+            tracker.retire(s, Result.VOID, tick, true, new Reason(cause, "월드 " + s.pos.world() + "를 찾을 수 없다", tick));
+            return;
+        }
+        DecoyGuard.Seal seal = DecoyGuard.checkAll(v, s.voxels);
+        switch (seal.state()) {
+            case SEALED -> s.held = null;
+            case UNKNOWN -> s.held = DecoyGuard.explain(v, seal);
+            case BREACHED -> tracker.retire(s, Result.VOID, tick, true, new Reason(cause, DecoyGuard.explain(v, seal), tick));
+        }
+    }
+
+    /**
+     * 청크가 서버에 로드됐다: 그 청크와 이웃 청크에 걸친 자리를 바로 다시 검사한다. 판단을 보류하던(이웃을 몰랐던) 자리가
+     * 그사이 이벤트 없이 바뀌어 실제로 노출됐으면 여기서 거둔다. 아직 한 번도 검사되지 않은 자리도 같이 본다. 메인 스레드에서 부른다.
+     */
+    public void onChunkLoaded(String world, int cx, int cz, long tick) {
+        for (Site s : tracker.allActive()) {
+            if (!s.pos.world().equals(world)) {
+                continue;
+            }
+            for (Voxel v : s.voxels) {
+                if (Math.abs(v.pos().chunkX() - cx) <= 1 && Math.abs(v.pos().chunkZ() - cz) <= 1) {
+                    verifySite(s, tick, RetireCause.CHUNK_LOAD_BREACH);
+                    break;
+                }
             }
         }
     }
@@ -400,21 +491,31 @@ public final class DecoyEngine {
         return out;
     }
 
+    private static String reasonText(PlannedPair pp) {
+        return pp.reason() == null ? "기록 없음" : pp.reason().text();
+    }
+
     private SiteDebug debugOf(UUID player, PlannedPair pp, SiteKind kind, List<Voxel> vs) {
         String status = null;
         for (Site s : tracker.sitesOf(player)) {
             if (s.pairId == pp.pairId && s.kind == kind) {
                 status = s.result == null ? "활성" : "판정 완료(" + s.result + ", 화면 유지)";
+                if (s.held != null) {
+                    status += " · 판단 보류 중: " + s.held;
+                }
                 break;
             }
         }
         if (status == null) {
             if (pp.retired()) {
-                status = "회수됨(다시 안 보냄)";
+                status = "회수됨(다시 안 보냄) · 사유: " + reasonText(pp);
             } else if (pp.consumed()) {
                 status = "판정 완료(" + pp.result() + ", 청크 밖: 다시 받으면 " + (kind == SiteKind.DECOY ? "미끼는 복원" : "새 관측 없음") + ")";
             } else {
                 status = "대기(청크 밖: 다시 받으면 복원)";
+            }
+            if (!pp.retired() && pp.reason() != null) {
+                status += " · 마지막 거둠 사유: " + reasonText(pp);
             }
         }
         return new SiteDebug(kind, vs.get(0).pos(), vs.size(), status);

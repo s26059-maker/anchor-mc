@@ -71,7 +71,8 @@ public final class ResponseTracker {
             double d = s.pos.world().equals(world) ? s.distanceTo(x, y, z) : Double.POSITIVE_INFINITY;
             if (d < params.retractDistance()) {
                 // 정상 플레이에선 오지 못하는 거리(밀착·노클립·텔레포트). 판정 전이면 제외하고 거둔다.
-                retire(s, Result.VOID, tick, true);
+                retire(s, Result.VOID, tick, true, new Reason(RetireCause.TOO_CLOSE,
+                        String.format(java.util.Locale.ROOT, "거리 %.2f < %.2f, 플레이어 (%.1f, %.1f, %.1f)", d, params.retractDistance(), x, y, z), tick));
             } else if (!s.hitReported && d <= params.reactionRadius()) {
                 react(s, tick);
             } else if (s.result == null && d > params.giveUpDistance()) {
@@ -112,17 +113,19 @@ public final class ResponseTracker {
         if (byPos.isEmpty()) {
             return;
         }
-        touch(p, tick);
+        touch(p, p, tick);
         for (int[] f : Pos.FACES) {
-            touch(p.offset(f[0], f[1], f[2]), tick);
+            touch(p, p.offset(f[0], f[1], f[2]), tick);
         }
     }
 
-    private void touch(Pos p, long tick) {
-        List<Site> list = byPos.get(p);
+    private void touch(Pos changed, Pos at, long tick) {
+        List<Site> list = byPos.get(at);
         if (list != null) {
             for (Site s : new ArrayList<>(list)) {
-                retire(s, Result.VOID, tick, true);
+                String detail = String.format(java.util.Locale.ROOT, "변경 좌표 (%d, %d, %d) → 자리의 %s (%d, %d, %d)",
+                        changed.x(), changed.y(), changed.z(), changed.equals(at) ? "블록" : "이웃", at.x(), at.y(), at.z());
+                retire(s, Result.VOID, tick, true, new Reason(RetireCause.BLOCK_EVENT, detail, tick));
             }
         }
     }
@@ -154,11 +157,19 @@ public final class ResponseTracker {
         lastPos.remove(player);
     }
 
+    /**
+     * 이 플레이어의 자리를 모두 거둔다. restoreBlock=true는 자격 상실(게임모드 변경 등): 화면에서만 거두고 판정은 내지 않는다
+     * (자격을 되찾아 청크를 다시 받으면 같은 미끼가 돌아온다). false는 월드 이동: 판정 전이던 자리는 증거에서 뺀다.
+     */
     public void dropPlayer(UUID player, long tick, boolean restoreBlock) {
         List<Site> list = byPlayer.get(player);
         if (list != null) {
             for (Site s : new ArrayList<>(list)) {
-                retire(s, Result.VOID, tick, restoreBlock);
+                if (restoreBlock) {
+                    retire(s, null, tick, true, new Reason(RetireCause.INELIGIBLE, "", tick));
+                } else {
+                    retire(s, Result.VOID, tick, false, new Reason(RetireCause.LEFT_WORLD, "", tick));
+                }
             }
         }
     }
@@ -170,16 +181,20 @@ public final class ResponseTracker {
     public void dropChunk(String world, int cx, int cz, long tick) {
         for (Site s : allActive()) {
             if (s.touchesChunk(world, cx, cz)) {
-                retire(s, null, tick, false);
+                retire(s, null, tick, false, chunkDropped(cx, cz, tick));
             }
         }
+    }
+
+    private static Reason chunkDropped(int cx, int cz, long tick) {
+        return new Reason(RetireCause.CHUNK_DROPPED, "청크(" + cx + ", " + cz + ")", tick);
     }
 
     /** 이 플레이어의 클라이언트가 청크를 버렸다(위와 같다). */
     public void dropChunkFor(UUID player, String world, int cx, int cz, long tick) {
         for (Site s : new ArrayList<>(sitesOf(player))) {
             if (s.touchesChunk(world, cx, cz)) {
-                retire(s, null, tick, false);
+                retire(s, null, tick, false, chunkDropped(cx, cz, tick));
             }
         }
     }
@@ -189,22 +204,32 @@ public final class ResponseTracker {
         List<Site> list = byPlayer.get(player);
         if (list != null) {
             for (Site s : new ArrayList<>(list)) {
-                retire(s, Result.VOID, tick, false);
+                retire(s, Result.VOID, tick, false, new Reason(RetireCause.QUIT, "", tick));
             }
         }
     }
 
     public void dropAll(long tick) {
         for (Site s : allActive()) {
-            retire(s, Result.VOID, tick, true);
+            retire(s, Result.VOID, tick, true, new Reason(RetireCause.SHUTDOWN, "", tick));
         }
     }
 
-    /** 자리를 거둔다. 판정 전이면 ifUnresolved(null이면 판정 없이)로 확정한다. */
-    public void retire(Site s, Result ifUnresolved, long tick, boolean restoreBlock) {
+    /** 이 플레이어의 이 쌍 자리를 모두 거둔다(계획이 이미 접혔는데 추적이 남은 경우). */
+    void retirePair(UUID player, long pairId, Reason why, long tick) {
+        for (Site s : new ArrayList<>(sitesOf(player))) {
+            if (s.pairId == pairId) {
+                retire(s, Result.VOID, tick, true, why);
+            }
+        }
+    }
+
+    /** 자리를 거둔다. 판정 전이면 ifUnresolved(null이면 판정 없이)로 확정한다. 사유는 반드시 남긴다. */
+    public void retire(Site s, Result ifUnresolved, long tick, boolean restoreBlock, Reason why) {
         if (!s.active) {
             return;
         }
+        s.reason = java.util.Objects.requireNonNull(why);
         if (s.result == null && ifUnresolved != null) {
             resolve(s, ifUnresolved, tick);
         }
