@@ -7,7 +7,8 @@ import java.util.function.LongSupplier;
 
 /**
  * 계정별 e-value 누적과 p0 추정.
- * 위약 반응은 전체 위약 반응률(p0 추정)과 계정 기록에만 쓰이고, e-value는 미끼 반응으로만 쌓인다.
+ * 위약 반응은 전체 위약 반응률(p0 추정)과 계정 기록에만 쓰이고, 혼합 e-value는 미끼 반응으로만 쌓인다.
+ * 쌍 정확 e-value는 (미끼, 위약) 쌍이 둘 다 판정된 뒤 한쪽만 반응한 쌍으로만 쌓인다(p0 불필요).
  * 메인 스레드에서만 호출한다.
  */
 public final class EvidenceEngine {
@@ -17,7 +18,8 @@ public final class EvidenceEngine {
 
     /** /anchor status용 스냅샷. */
     public record View(String name, int decoyN, int decoyHits, int placeboN, int placeboHits,
-                       double log10E, boolean confirmed, long confirmedAt) {
+                       double log10E, boolean confirmed, long confirmedAt,
+                       int pairDecoyOnly, int pairPlaceboOnly, int pairBoth, int pairNeither, double log10EPaired) {
         public double decoyRate() {
             return decoyN == 0 ? Double.NaN : (double) decoyHits / decoyN;
         }
@@ -31,10 +33,17 @@ public final class EvidenceEngine {
     public record Stats(long placeboN, long placeboHits, double placeboRate, double p0, int confirmedAccounts) {
     }
 
+    /** 쌍의 먼저 판정된 쪽. VOIDED면 짝 한쪽이 증거에서 빠져 쌍째 버린다. */
+    private record Pending(boolean voided, boolean decoy, boolean hit) {
+    }
+
+    private static final int NO_PAIR = -1;
+
     private EvidenceParams params;
     private final EvidenceStore store;
     private final LongSupplier millis;
     private final Map<UUID, AccountRecord> cache = new HashMap<>();
+    private final Map<Long, Pending> pending = new HashMap<>();
     private long placeboN;
     private long placeboHits;
 
@@ -75,20 +84,20 @@ public final class EvidenceEngine {
         return r;
     }
 
-    /** 판정된 관측 하나. 이 호출로 새로 확정되면 그 정보를 돌려준다. */
+    /** 쌍 번호 없이 판정된 관측 하나(혼합 e-value만 갱신). */
     public Confirmation observe(UUID id, String name, boolean decoy, boolean hit) {
+        return observe(id, name, decoy, hit, NO_PAIR);
+    }
+
+    /** 판정된 관측 하나. 이 호출로 새로 확정되면 그 정보를 돌려준다. pairId가 -1이면 쌍 검정에는 쓰지 않는다. */
+    public Confirmation observe(UUID id, String name, boolean decoy, boolean hit, long pairId) {
         AccountRecord r = account(id, name);
-        Confirmation out = null;
+        double p0 = currentP0(); // 이 관측 이전의 데이터로만 정한다
         if (decoy) {
-            double p0 = currentP0(); // 이 관측 이전의 데이터로만 정한다
             Mixture.observe(r.logs, hit, p0);
             r.decoyN++;
             if (hit) {
                 r.decoyHits++;
-            }
-            if (!r.confirmed() && Mixture.logE(r.logs) >= Math.log(1 / params.alpha())) {
-                r.confirmedAt = millis.getAsLong();
-                out = new Confirmation(r.copy(), p0);
             }
         } else {
             r.placeboN++;
@@ -98,8 +107,53 @@ public final class EvidenceEngine {
                 placeboHits++;
             }
         }
+        if (pairId != NO_PAIR) {
+            Pending first = pending.remove(pairId);
+            if (first == null) {
+                pending.put(pairId, new Pending(false, decoy, hit));
+            } else if (!first.voided()) {
+                boolean decoyHit = decoy ? hit : first.hit();
+                boolean placeboHit = decoy ? first.hit() : hit;
+                if (decoyHit && placeboHit) {
+                    r.pairBoth++;
+                } else if (!decoyHit && !placeboHit) {
+                    r.pairNeither++;
+                } else if (decoyHit) {
+                    r.pairDecoyOnly++;
+                    Mixture.observePaired(r.logsPaired, true);
+                } else {
+                    r.pairPlaceboOnly++;
+                    Mixture.observePaired(r.logsPaired, false);
+                }
+            }
+        }
+        Confirmation out = null;
+        if (!r.confirmed() && meetsRule(r)) {
+            r.confirmedAt = millis.getAsLong();
+            out = new Confirmation(r.copy(), p0);
+        }
         store.save(r);
         return out;
+    }
+
+    /** 쌍의 한쪽이 판정 없이(VOID) 거둬졌다: 이 쌍은 쌍 검정에서 뺀다. */
+    public void voidPair(long pairId) {
+        if (pairId == NO_PAIR) {
+            return;
+        }
+        Pending first = pending.remove(pairId);
+        if (first == null) {
+            pending.put(pairId, new Pending(true, false, false));
+        }
+    }
+
+    private boolean meetsRule(AccountRecord r) {
+        boolean mix = Mixture.logE(r.logs) >= Math.log(1 / params.alpha());
+        return switch (params.rule()) {
+            case MIXTURE -> mix;
+            case PAIRED -> Mixture.logE(r.logsPaired) >= Math.log(1 / params.alpha());
+            case BOTH -> mix && Mixture.logE(r.logsPaired) >= Math.log(1 / params.pairedAlpha());
+        };
     }
 
     public View view(String name) {
@@ -124,11 +178,17 @@ public final class EvidenceEngine {
 
     private static View toView(AccountRecord r) {
         return new View(r.name, r.decoyN, r.decoyHits, r.placeboN, r.placeboHits,
-                r.log10E(), r.confirmed(), r.confirmedAt);
+                r.log10E(), r.confirmed(), r.confirmedAt,
+                r.pairDecoyOnly, r.pairPlaceboOnly, r.pairBoth, r.pairNeither, r.log10EPaired());
     }
 
     public Stats stats() {
         double rate = placeboN == 0 ? Double.NaN : (double) placeboHits / placeboN;
         return new Stats(placeboN, placeboHits, rate, currentP0(), store.confirmedCount());
+    }
+
+    /** 짝을 기다리는 쌍 수(테스트·점검용). */
+    public int pendingPairs() {
+        return pending.size();
     }
 }
