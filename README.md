@@ -520,3 +520,45 @@ E에서 신뢰100% 단일 필터는 모양 96%, 재방문 차이 91%(모두 BOTH
    진짜 광맥 밀도의 바닐라 근사, 정직 두 가지 플레이 방식은 내가 정한 값이다. 사람 데이터가 아니다.
 9. **CPU 수치는 합성 지형**(섹션당 10종 상태)이고 실제 서버의 청크 패킷 크기·팔레트 분포는 다르다. 바이트의 팔레트 경계 최악값이 실제로 얼마나 자주 나오는지는 모른다.
 10. 이 단계에서 기존 테스트 27개(1.1 기준 48개 중)는 API 변경에 맞춰 호출부와 기대를 고쳤다: 만료·언로드 관련 기대(VOID → 판정 없음, MISS 후 화면 유지), 재검사 호출(먼 자리는 10번에 한 번). 검사하려는 불변식은 그대로다.
+
+## 실서버 1차 테스트: 미끼·위약이 거의 전부 회수된 버그
+
+### 관측
+Paper 26.2 build 129 + PacketEvents 2.14.0. 청크 패킷 미끼 삽입 473회(실패 0), 광맥 표본 601개, 위약 반응 0/143, 판정 전 회수 1535.
+`/anchor debug`: 계획 1892(미끼 946, 위약 946), 활성 0, 판정 완료 0, **회수됨 1832**, 대기 60. 플레이어는 크리에이티브로 날아 Y −30 근처까지 내려갔고 블록은 거의 깨지 않았다. 10블록 거리 자리도 전부 회수됨. 위약도 미끼와 같은 비율로 회수됐다(위약은 아무것도 보내지 않으니 플레이어 행동이 아니라 회수 판단 코드가 원인).
+
+### 코드로 확인한 원인 후보 (실서버 사유 집계는 아직 없다)
+요청한 네 후보를 코드에서 확인한 결과다. **실서버에서 어느 것이 실제로 일어났는지는 새 사유 집계(아래)로 확정해야 한다.** 이 절의 수정은 코드에서 결함으로 확인된 두 가지를 고친다.
+
+| 후보 | 코드 확인 | 결과 |
+| --- | --- | --- |
+| 자격 상실이 계획을 영구 회수 | `PlayerRegistry`는 서바이벌·모험만 `eligible`. `AnchorListener.onGameMode`와 매초 `tick()`이 `dropPlayer(restore=true)`를 부르고, 훅이 `restoreBlock`이면 `PlannedPair.retire()`를 불러 **그 플레이어의 모든 계획을 영구 회수**했다 | **결함, 수정.** 서바이벌로 접속해 청크 473개에 미끼가 들어간 뒤 크리에이티브로 바꾸면 위 관측(활성 0, 회수됨 ≈ 전부, 미끼·위약 같은 비율, 거리 무관, 블록을 안 깨도 발생)과 정확히 일치한다. `tick()`이 크리에이티브인 동안 매초 다시 부르므로 이후에 온 자리도 없다 |
+| 주기 검사(0.5초)가 로드 안 된 청크를 "불투명 고체 아님"으로 판단 | `BukkitBlockView`는 로드 안 된 청크를 null로 봐서 `hostAt`=null, `isStableOpaque`=false. `verifyAll`은 이를 뚫림으로 보고 VOID 회수 + 영구 회수 | **결함, 수정.** 미끼는 패킷 시야에서 자기 청크 안 이웃까지 봉인이 확인돼야만 계획되므로 이웃 청크에 걸치는 자리는 없다(한계 3). 그래서 실제로 걸리는 것은 "자기 청크가 서버에서 아직/이미 로드 안 됨"이다. 서버가 청크를 내리고 클라이언트는 갖고 있는 구간 등에서 발생 가능 |
+| `DecoyGuard`가 26.2 블록(deepslate 계열·tuff·calcite 등)을 빠뜨림 | 불투명 판정은 이름이 아니라 `Material.isOccluding()`(중력·불안정 제외)이고 계획 시점(패킷 시야, `PacketStateTable`)과 주기 검사(`BukkitBlockView`)가 **같은 규칙**이다. 목록에서 빠지는 블록은 없다. 다만 `isOccluding()`이 26.2에서 실제로 어떤 재질을 false로 주는지는 서버에서만 알 수 있다 | 코드 결함은 못 찾음. **새 사유 기록이 뚫린 이웃의 재질 이름을 남기므로 서버에서 직접 확인한다** |
+| 계획 시점과 주기 검사가 다른 기준 | 둘 다 `DecoyGuard` 하나를 쓴다(계획 `PairPlanner`, `prepareChunk`, `ChunkPatcher`, `registerChunk`, `verifyAll`). 다른 것은 **시야**뿐: 패킷 시야(이 청크만) vs 실제 월드. Paper anti-xray 등이 패킷의 돌을 바꾸면 두 시야의 `hostAt`이 달라질 수 있다 | 기준은 같음. 시야 차이는 `PACKET_UNSEALED`와 `REGISTER_UNSEALED` 집계로 갈라 볼 수 있다 |
+| 패킷 스레드(Netty)와 메인 스레드 사이 상태 꼬임 | `PlannedPair`의 `consume()`(확인 후 대입)과 `retire()`가 스레드 사이에 원자적이지 않아 회수된 쌍이 되살아날 수 있었다 | **경합 가능성, 굳혀 둠.** 전이를 한 자물쇠 아래에서 하고 RETIRED를 끝 상태로 했다. 이것이 1832건의 원인이라고 볼 근거는 없다(재현 못 함) |
+
+### 수정
+1. **회수 사유 기록.** `RetireCause`(12종)와 `Reason`(사유, 좌표·블록 종류·청크 로드 여부, 틱). 모든 거둠은 사유가 반드시 있다(`ResponseTracker.retire`가 null이면 거부).
+   사유: `PACKET_UNSEALED`, `REGISTER_UNSEALED`, `PERIODIC_BREACH`, `CHUNK_LOAD_BREACH`, `BLOCK_EVENT`, `TOO_CLOSE`(영구 회수) / `INELIGIBLE`, `REGISTER_NOT_ALLOWED`, `LEFT_WORLD`, `QUIT`, `CHUNK_DROPPED`, `SHUTDOWN`(화면에서만 거둠, 계획 유지).
+2. **`/anchor stats`** 끝에 "회수 사유별(쌍 단위): 이름(설명) 횟수 ... || 판단 보류 중인 활성 자리 N". **`/anchor debug`**는 같은 요약을 먼저 찍고, 상태에 사유를 붙인다: `회수됨(다시 안 보냄) · 사유: 주기 검사: 이웃이 불투명 고체가 아님 — 자리 (x, y, z)의 이웃 (x, y, z) 블록=DIRT, 청크(cx, cz) 청크 로드=true, 뚫림`. 계획이 남은 거둠은 `대기(...) · 마지막 거둠 사유: ...`.
+3. **자격 상실은 영구 회수가 아니다.** 화면에서만 거두고(판정 없음, 노출 시간 정지) 계획은 남긴다. 서바이벌로 돌아와 청크를 다시 받으면 같은 미끼가 돌아온다. 크리에이티브인 동안은 미끼를 넣지 않는 것은 그대로다.
+4. **인접 청크 정책: 판단 보류.** `DecoyGuard.check`는 봉인됨/뚫림/모름 셋을 구분한다(뚫림이 모름보다 우선). 모름은 이웃 좌표의 청크가 로드 안 됐을 때뿐이다.
+   - **새로 보낼 때(계획·`prepareChunk`·`ChunkPatcher`)는 `sealed()` = 봉인됨만 통과**한다: 모름도 불허. 불변식 1·3은 그대로다(테스트 `guardDistinguishesBreachFromUnknownNeighbor`가 "모름이면 `sealed()`는 false"를 확인).
+   - 이미 나간 자리의 주기 검사(`verifyAll`)는 뚫림만 거두고 모름은 보류한다(`판단 보류 중`으로 표시).
+   - 보류하던 이웃 청크가 서버에 로드되면(`ChunkLoadEvent`) `onChunkLoaded`가 그 청크와 이웃 청크에 걸친 자리를 **바로** 다시 검사해, 그사이 이벤트 없이 바뀌어 실제로 노출됐으면 그때 거둔다(`CHUNK_LOAD_BREACH`).
+   - 등록 단계(`registerChunk`)도 같다: 뚫림이면 회수, 모름이면 추적하고 보류.
+5. **동시성.** `PlannedPair` 상태 전이를 한 자물쇠 아래로. 사유 집계는 쌍이 처음 접힐 때 한 번만 센다.
+
+### 재현 테스트 (수정 전 실패 확인 → 통과)
+수정 전 코드에서 두 재현 테스트가 실패하는 것을 먼저 확인했다(`losingEligibilityDoesNotRetirePlansForever`: "자격 상실이 계획을 영구 회수로 표시했다", `periodicCheckHoldsWhenChunkIsNotLoaded`: "로드 안 된 청크를 이유로 자리를 회수했다"). 수정 뒤 통과한다.
+`RetirementCauseTest`(6개): 위 둘 + `heldSitesAreRetiredWhenChunkLoadsAndIsActuallyExposed`(불변식 3: 보류 뒤 로드됐을 때 실제 노출이면 회수하고 되돌리기 패킷이 나감) + `guardDistinguishesBreachFromUnknownNeighbor` + `everyRetirementRecordsCauseAndDetail`(좌표·재질 설명·청크 로드 여부·집계) + `terminalRetirementCannotBeUndoneByLateConsume`.
+전체 78개 통과(기존 72개 그대로, 기존 테스트는 수정하지 않았다).
+
+### 실서버에서 다시 확인할 방법
+1. 새 jar를 넣고 서버를 켠다(PacketEvents 2.14.0 그대로). **서바이벌**로 접속해 같은 곳까지 내려간다(크리에이티브로 바꾸는 것은 마지막에).
+2. `/anchor stats` → 마지막 줄 "회수 사유별". 서바이벌로 파고 내려가는 동안 `INELIGIBLE`이 0이고 회수됨 총합이 작아야 한다. `PACKET_UNSEALED`·`REGISTER_UNSEALED`·`PERIODIC_BREACH`가 많으면 `/anchor debug`로 그 자리의 사유 문장(이웃 좌표·블록 종류)을 알려 달라. **블록 종류가 tuff·calcite·deepslate 계열 등 "고체여야 하는" 재질인데 `(isOccluding=false)`가 붙어 있으면 26.2의 `isOccluding` 문제다.**
+3. `/anchor debug <나>`: 활성이 0이 아니어야 하고, 거리 10블록 안 자리가 "활성"이어야 한다.
+4. 이제 `/gamemode creative` → `/anchor stats`에서 `INELIGIBLE [계획 유지]`가 늘고 debug가 "회수됨"이 아니라 "대기 · 마지막 거둠 사유: 플레이어 자격 상실"이어야 한다. 다시 `/gamemode survival` 뒤 멀어졌다 돌아오면(청크 재전송) 같은 좌표가 "활성"으로 돌아온다.
+5. "판단 보류 중인 활성 자리"가 0보다 크면 그 자리들은 자기 청크가 서버에 로드 안 된 채 클라이언트가 갖고 있는 것이다. 청크가 로드될 때 `CHUNK_LOAD_BREACH`가 있으면 실제로 그사이 바뀐 것이다.
+6. 코드로 확정하지 못한 것: 원래 1832건이 위 원인 중 무엇이었는지. 위 순서 2에서 **사유 집계가 회수 사유를 확정**한다.
