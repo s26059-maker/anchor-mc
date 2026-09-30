@@ -82,11 +82,9 @@ public final class VeinProfile {
         if (cells.length == 0) {
             cells = new int[][] {{0, 0, 0}};
         }
-        // 아래쪽에 몰린 삼각 분포(최빈값 yMin+5).
-        double mode = yMin + 5, u = rng.nextDouble();
-        double fc = (mode - yMin) / (double) (yMax - yMin);
-        double y = u < fc ? yMin + Math.sqrt(u * (yMax - yMin) * (mode - yMin))
-                : yMax - Math.sqrt((1 - u) * (yMax - yMin) * (yMax - mode));
+        // 바닐라 다이아 높이는 [-144, 16] 삼각 분포(최빈값 -64)인데 월드가 -64에서 끝나므로, 남는 부분은 위로 갈수록 줄어드는
+        // 선형 밀도(밀도 ∝ yMax - y)다.
+        double y = yMax - (yMax - yMin) * Math.sqrt(1 - rng.nextDouble());
         return new Placed(cells, (int) Math.floor(y));
     }
 }

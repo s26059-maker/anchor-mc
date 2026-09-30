@@ -95,17 +95,17 @@ public final class DecoyEngine {
         if (profile.wantsSamples()) {
             VeinScanner.scanChunk(view, p.world(), cx, cz, params.yMin(), params.yMax(), profile);
         }
-        if (tick < nextSpawn.getOrDefault(p.id(), 0L)) {
-            return;
+        // 이 청크에 시도할 쌍 수: pairsPerChunk의 정수부 + 소수부 확률로 하나 더.
+        double lambda = params.pairsPerChunk();
+        int tries = (int) Math.floor(lambda) + (rng.nextDouble() < lambda - Math.floor(lambda) ? 1 : 0);
+        for (int i = 0; i < tries; i++) {
+            if (tick < nextSpawn.getOrDefault(p.id(), 0L)
+                    || tracker.sitesOf(p.id()).size() + 2 > 2 * params.maxActivePairs()) {
+                return;
+            }
+            nextSpawn.put(p.id(), tick + params.cooldownTicks());
+            spawnPair(p, view, cx, cz, tick);
         }
-        if (tracker.sitesOf(p.id()).size() + 2 > 2 * params.maxActivePairs()) {
-            return;
-        }
-        if (rng.nextDouble() >= params.pairsPerChunk()) {
-            return;
-        }
-        nextSpawn.put(p.id(), tick + params.cooldownTicks());
-        spawnPair(p, view, cx, cz, tick);
     }
 
     private void spawnPair(PlayerState p, BlockView view, int cx, int cz, long tick) {

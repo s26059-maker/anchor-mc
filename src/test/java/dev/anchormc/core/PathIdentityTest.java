@@ -99,7 +99,7 @@ class PathIdentityTest {
         RandomGenerator r = rng(1);
         GridWorld w = GridWorld.solid(64);
         int decoyFirst = 0, pairs = 0;
-        double dDecoy = 0, dPlacebo = 0;
+        double dDecoy = 0, dPlacebo = 0, distSq = 0;
         int nDecoy = 0, nPlacebo = 0;
         for (int i = 0; i < 1500; i++) {
             // 매번 새 엔진: 쿨다운·상한 영향 없이 쌍 하나씩.
@@ -116,6 +116,7 @@ class PathIdentityTest {
             pairs++;
             for (Site site : s) {
                 double d = site.pos.distanceTo(32.5, 32.5, 32.5);
+                distSq += d * d;
                 if (site.kind == SiteKind.DECOY) {
                     dDecoy += d;
                     nDecoy++;
@@ -136,6 +137,11 @@ class PathIdentityTest {
         // 이항 표준편차 ≈ 0.013. 5σ 안.
         assertTrue(Math.abs(frac - 0.5) < 0.065, "동전이 치우쳤다: " + frac);
         double gap = Math.abs(dDecoy / nDecoy - dPlacebo / nPlacebo);
-        assertTrue(gap < 0.5, "미끼와 위약의 거리 분포가 다르다: " + gap);
+        // 두 평균의 차이는 표준오차 sqrt(2)·sd/sqrt(n) 정도로 흔들린다(뭉치 배치 뒤에는 거리 산포가 커서 고정 임계값 0.5는 1σ대였다).
+        // 표준편차를 표본에서 구해 4σ 안에 있는지 본다.
+        double mean = (dDecoy + dPlacebo) / (nDecoy + nPlacebo);
+        double sd = Math.sqrt(Math.max(distSq / (nDecoy + nPlacebo) - mean * mean, 0));
+        double se = Math.sqrt(2.0) * sd / Math.sqrt(pairs);
+        assertTrue(gap < 4 * se, "미끼와 위약의 거리 분포가 다르다: 평균 차이 " + gap + ", 표준오차 " + se);
     }
 }

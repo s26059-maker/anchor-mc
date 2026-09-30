@@ -19,7 +19,7 @@ public record Params(
         int profileSamples) {
 
     public static Params defaults() {
-        return new Params(3.0, 240 * 20L, 160.0, 2.0, -64, 16, 6.0, 3, 15 * 20L, 60, 0.5, 300);
+        return new Params(3.0, 240 * 20L, 160.0, 2.0, -64, 16, 6.0, 24, 0, 60, 2.0, 600);
     }
 
     public Params {
@@ -30,7 +30,7 @@ public record Params(
         require(windowTicks > 0 && cooldownTicks >= 0, "시간 창/쿨다운이 잘못됐다");
         require(yMin < yMax, "y-min < y-max여야 한다");
         require(maxActivePairs >= 1 && maxAttempts >= 1, "max-active-pairs, max-attempts는 1 이상");
-        require(pairsPerChunk > 0 && pairsPerChunk <= 1, "pairs-per-chunk는 (0, 1]");
+        require(pairsPerChunk > 0 && pairsPerChunk <= 8, "pairs-per-chunk는 (0, 8]");
         require(profileSamples >= 0, "profile-samples는 0 이상");
     }
 

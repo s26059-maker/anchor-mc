@@ -19,7 +19,7 @@ public record EvidenceParams(double alpha, double p0Multiplier, int minPlaceboSa
     }
 
     public static EvidenceParams defaults() {
-        return new EvidenceParams(1e-9, 2.0, 100);
+        return new EvidenceParams(1e-9, 2.0, 100, 1e-3, Rule.BOTH);
     }
 
     public EvidenceParams {
