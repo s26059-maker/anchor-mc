@@ -63,3 +63,12 @@ tasks.register<JavaExec>("runSim") {
     mainClass.set("dev.anchormc.sim.Simulation")
     maxHeapSize = "2g"
 }
+
+tasks.register<JavaExec>("runBench") {
+    group = "verification"
+    description = "청크 패킷 수정의 CPU·추가 바이트를 실제 PacketEvents 청크 객체로 잰다."
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("dev.anchormc.plugin.PacketBench")
+    maxHeapSize = "2g"
+    jvmArgs("-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8")
+}

@@ -34,8 +34,11 @@ abstract class Agent {
         /** 나타났을 때의 에이전트와의 거리(첫 접속 때 받은 것은 먼 것으로 친다). */
         final double popDist;
         final boolean trusted;
+        /** 이 청크를 다시 받았을 때, 처음 받았을 때의 데이터에 없던 광석(클라이언트가 청크를 캐시하면 알 수 있다). */
+        final boolean changed;
 
-        ClientOre(int x, int y, int z, boolean real, long arrival, long chunkLoad, boolean viaChunk, double popDist, boolean trusted) {
+        ClientOre(int x, int y, int z, boolean real, long arrival, long chunkLoad, boolean viaChunk, double popDist, boolean trusted,
+                  boolean changed) {
             this.x = x;
             this.y = y;
             this.z = z;
@@ -45,6 +48,7 @@ abstract class Agent {
             this.viaChunk = viaChunk;
             this.popDist = popDist;
             this.trusted = trusted;
+            this.changed = changed;
         }
     }
 
@@ -61,11 +65,13 @@ abstract class Agent {
     int oresMined;
     /** 미끼가 나타난 시각에 더할 지연(틱). 전송이 청크 이벤트보다 늦게 나가는 경우를 흉내 낸다. */
     long showDelay;
+    /** true면 미끼가 청크 데이터가 아니라 별도 블록 갱신 패킷으로 온다(1.1단계 방식, 대조군). false면 청크 데이터에 들어 있다. */
+    boolean legacy;
 
     // ---- 증거 추적: 규칙별 확정 시각(틱, 없으면 -1)과 최대 log10E ----
     static final double CONFIRM = 9, GUARD = 3;
     final long[] crossTick = {-1, -1, -1, -1};
-    double maxMix, maxPair, maxAvg;
+    double maxMix, maxPair, maxFirst;
     boolean stopOnAll = true;
 
     // ---- 클라이언트 ----
@@ -74,6 +80,11 @@ abstract class Agent {
     int version;
     private int curCx = Integer.MIN_VALUE, curCz;
     private boolean firstBatch = true;
+    /** 클라이언트가 캐시한 청크별 처음 받은 광석(청크를 버려도 남는다). */
+    private final Map<Integer, java.util.Set<Integer>> firstOres = new HashMap<>();
+    private final java.util.Set<Integer> visited = new java.util.HashSet<>();
+    boolean currentRevisit;
+    int revisits;
 
     Agent(SimWorld world, AnchorCore core, UUID id, String name, RandomGenerator rng, int[] start) {
         this.world = world;
@@ -114,14 +125,28 @@ abstract class Agent {
         boolean trusted = rollTrust();
         for (Voxel v : vs) {
             int ax = v.pos().x(), ay = v.pos().y() - SimWorld.Y0, az = v.pos().z();
-            Long lt = loaded.get((ax >> 4) * SimWorld.CZ + (az >> 4));
+            int ck = (ax >> 4) * SimWorld.CZ + (az >> 4);
+            Long lt = loaded.get(ck);
             if (lt == null) {
                 continue; // 클라이언트가 그 청크를 갖고 있지 않으면 무시된다
             }
-            known.put(SimWorld.idx(ax, ay, az),
-                    new ClientOre(ax, ay, az, false, tick + showDelay, lt, false, firstBatch ? 99 : dist(ax, ay, az), trusted));
+            int idx = SimWorld.idx(ax, ay, az);
+            boolean changed = noteFirst(ck, idx);
+            // 청크 데이터에 들어 있으면 도착 시각이 청크와 같고 경로도 청크 데이터다. 아니면 별도 패킷(지연 가능).
+            known.put(idx, new ClientOre(ax, ay, az, false, legacy ? tick + showDelay : tick, lt, !legacy,
+                    firstBatch ? 99 : dist(ax, ay, az), trusted, changed));
         }
         version++;
+    }
+
+    /** 이 청크의 첫 방문이면 기록하고 false, 재방문이면 처음 데이터에 없던 것인지 돌려준다. */
+    private boolean noteFirst(int chunkKey, int idx) {
+        java.util.Set<Integer> first = firstOres.computeIfAbsent(chunkKey, k -> new java.util.HashSet<>());
+        if (!currentRevisit) {
+            first.add(idx);
+            return false;
+        }
+        return !first.contains(idx);
     }
 
     void retract(List<Pos> ps) {
@@ -171,19 +196,26 @@ abstract class Agent {
     }
 
     private void load(int cx, int cz) {
-        loaded.put(cx * SimWorld.CZ + cz, tick);
+        int key = cx * SimWorld.CZ + cz;
+        loaded.put(key, tick);
+        currentRevisit = !visited.add(key);
+        if (currentRevisit) {
+            revisits++;
+        }
         if (tracksClient()) {
-            for (int[] o : world.oresByChunk.get(cx * SimWorld.CZ + cz)) {
+            for (int[] o : world.oresByChunk.get(key)) {
                 if (world.get(o[0], o[1], o[2]) == SimWorld.ORE) {
-                    known.put(SimWorld.idx(o[0], o[1], o[2]),
-                            new ClientOre(o[0], o[1], o[2], true, tick, tick, true, firstBatch ? 99 : dist(o[0], o[1], o[2]), true));
+                    int idx = SimWorld.idx(o[0], o[1], o[2]);
+                    boolean changed = noteFirst(key, idx);
+                    known.put(idx, new ClientOre(o[0], o[1], o[2], true, tick, tick, true,
+                            firstBatch ? 99 : dist(o[0], o[1], o[2]), true, changed));
                 }
             }
             version++;
         }
         long t0 = System.nanoTime();
         core.decoys.onChunkSent(state(), cx, cz, tick);
-        Metrics.chunkSend(System.nanoTime() - t0);
+        Metrics.chunkSend(System.nanoTime() - t0, currentRevisit);
     }
 
     private void unload(int cx, int cz) {
@@ -240,18 +272,19 @@ abstract class Agent {
         }
     }
 
-    /** 지금의 e-value를 읽어 최대값과 규칙별 첫 확정 시각을 갱신한다. */
+    /**
+     * 지금의 e-value를 읽어 최대값과 규칙별 첫 확정 시각을 갱신한다.
+     * 규칙 0: 혼합 ≥ 10^9. 1: 쌍(한쪽만 반응, 1.1 정의) ≥ 10^9. 2: 기본 규칙 BOTH = 혼합 ≥ 10^9 그리고 먼저 반응한 쪽 ≥ 10^3. 3: 먼저 반응한 쪽 ≥ 10^9. (규칙 2는 두 e-과정이 각각 한 번이라도 문턱을 넘었으면 된다: 엔진의 ever 표시와 같다.)
+     */
     void poll() {
         var v = core.evidence.viewOf(id);
         if (v == null) {
             return;
         }
-        double m = v.log10E(), p = v.log10EPaired();
-        double hi = Math.max(m, p), lo = Math.min(m, p);
-        double avg = hi + Math.log10(1 + Math.pow(10, lo - hi)) - Math.log10(2);
+        double m = v.log10E(), p = v.log10EPaired(), f = v.log10EFirst();
         maxMix = Math.max(maxMix, m);
         maxPair = Math.max(maxPair, p);
-        maxAvg = Math.max(maxAvg, avg);
+        maxFirst = Math.max(maxFirst, f);
         long t = Math.max(tick, engineTick);
         if (crossTick[0] < 0 && m >= CONFIRM) {
             crossTick[0] = t;
@@ -259,10 +292,10 @@ abstract class Agent {
         if (crossTick[1] < 0 && p >= CONFIRM) {
             crossTick[1] = t;
         }
-        if (crossTick[2] < 0 && m >= CONFIRM && p >= GUARD) {
+        if (crossTick[2] < 0 && maxMix >= CONFIRM && maxFirst >= GUARD) { // 두 e-과정 각각 "언젠가 넘음"
             crossTick[2] = t;
         }
-        if (crossTick[3] < 0 && avg >= CONFIRM) {
+        if (crossTick[3] < 0 && f >= CONFIRM) {
             crossTick[3] = t;
         }
     }
@@ -287,7 +320,7 @@ abstract class Agent {
                 advance(20);
             }
         }
-        core.decoys.dropPlayer(id, engineTick, true);
+        core.decoys.forgetPlayer(id, engineTick);
     }
 
     double minutes(long ticks) {

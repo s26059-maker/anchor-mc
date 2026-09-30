@@ -91,29 +91,36 @@ final class Agents {
      * 검증형 엑스레이가 미끼를 거르려고 쓰는 규칙. 모두 클라이언트가 실제로 볼 수 있는 정보만 쓴다.
      * timing: 그 광석이 속한 청크가 로드된 뒤 tolerance틱보다 늦게 나타난 광석은 무시.
      * shape: 26방향으로 이어진 광석 덩어리의 크기가 [minSize, maxSize] 밖이면(단일 블록 포함) 무시.
-     * packet: 청크 데이터가 아니라 블록 갱신 패킷으로 온 광석은 무시(가장 강한 필터).
+     * packet: 청크 데이터가 아니라 블록 갱신 패킷으로 온 광석은 무시.
+ * revisit: 같은 청크를 다시 받았을 때 처음 받은 데이터에 없던 광석은 무시(클라이언트가 청크를 캐시한다고 가정).
      */
-    record Filters(boolean timing, long tolerance, boolean shape, int minSize, int maxSize, boolean packet) {
-        static final Filters NONE = new Filters(false, 0, false, 2, 12, false);
+    record Filters(boolean timing, long tolerance, boolean shape, int minSize, int maxSize, boolean packet, boolean revisit) {
+        static final Filters NONE = new Filters(false, 0, false, 2, 12, false, false);
 
         static Filters onlyTiming() {
-            return new Filters(true, 0, false, 2, 12, false);
+            return new Filters(true, 0, false, 2, 12, false, false);
         }
 
         static Filters onlyShape() {
-            return new Filters(false, 0, true, 2, 12, false);
+            return new Filters(false, 0, true, 2, 12, false, false);
         }
 
-        static Filters timingAndShape() {
-            return new Filters(true, 0, true, 2, 12, false);
+        static Filters onlyRevisit() {
+            return new Filters(false, 0, false, 2, 12, false, true);
         }
 
-        static Filters all() {
-            return new Filters(true, 0, true, 2, 12, true);
+        static Filters onlyPacket() {
+            return new Filters(false, 0, false, 2, 12, true, false);
         }
 
-        static Filters packetOnly() {
-            return new Filters(false, 0, false, 2, 12, true);
+        /** 시점 + 모양 + 재방문 차이(청크 데이터 경로에서 쓸 수 있는 필터 전부). */
+        static Filters allData() {
+            return new Filters(true, 0, true, 2, 12, false, true);
+        }
+
+        /** 위에 더해 패킷 경로까지. */
+        static Filters everything() {
+            return new Filters(true, 0, true, 2, 12, true, true);
         }
     }
 
@@ -132,8 +139,6 @@ final class Agents {
         private Integer targetKey;
         private boolean targetReal;
         private int fooled;
-        private Map<Integer, Integer> comps;
-        private int compsVersion = -1;
 
         Xray(SimWorld w, AnchorCore c, UUID id, String name, RandomGenerator r, int[] start, double trust, int verifierK, Filters filters) {
             super(w, c, id, name, r, start);
@@ -172,48 +177,35 @@ final class Agents {
             return verifierK > 0 && fooled >= verifierK;
         }
 
-        /** 클라이언트가 아는 광석의 26방향 연결 덩어리 크기. */
-        private Map<Integer, Integer> components() {
-            if (comps != null && compsVersion == version) {
-                return comps;
-            }
-            Map<Integer, Integer> out = new HashMap<>();
-            Map<Integer, Integer> size = new HashMap<>();
-            for (Map.Entry<Integer, ClientOre> e : known.entrySet()) {
-                if (out.containsKey(e.getKey())) {
-                    continue;
-                }
-                List<Integer> members = new ArrayList<>();
-                ArrayDeque<ClientOre> q = new ArrayDeque<>();
-                q.add(e.getValue());
-                out.put(e.getKey(), -1);
-                while (!q.isEmpty()) {
-                    ClientOre o = q.poll();
-                    members.add(SimWorld.idx(o.x, o.y, o.z));
-                    for (int dx = -1; dx <= 1; dx++) {
-                        for (int dy = -1; dy <= 1; dy++) {
-                            for (int dz = -1; dz <= 1; dz++) {
-                                if (dx == 0 && dy == 0 && dz == 0 || !world.in(o.x + dx, o.y + dy, o.z + dz)) {
-                                    continue;
-                                }
-                                int k = SimWorld.idx(o.x + dx, o.y + dy, o.z + dz);
-                                ClientOre n = known.get(k);
-                                if (n != null && !out.containsKey(k)) {
-                                    out.put(k, -1);
-                                    q.add(n);
-                                }
+        /**
+         * 클라이언트가 아는 광석 중 이 광석과 26방향으로 이어진 덩어리의 크기(cap을 넘으면 cap+1에서 멈춘다).
+         * 후보로 올라온 광석만 그때그때 센다: 필터 결과는 전체 덩어리를 미리 세는 것과 같다.
+         */
+        private int componentSize(ClientOre start, int cap) {
+            java.util.Set<Integer> seen = new java.util.HashSet<>();
+            ArrayDeque<ClientOre> q = new ArrayDeque<>();
+            q.add(start);
+            seen.add(SimWorld.idx(start.x, start.y, start.z));
+            int n = 0;
+            while (!q.isEmpty() && n <= cap) {
+                ClientOre o = q.poll();
+                n++;
+                for (int dx = -1; dx <= 1; dx++) {
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dz = -1; dz <= 1; dz++) {
+                            if (dx == 0 && dy == 0 && dz == 0 || !world.in(o.x + dx, o.y + dy, o.z + dz)) {
+                                continue;
+                            }
+                            int k = SimWorld.idx(o.x + dx, o.y + dy, o.z + dz);
+                            ClientOre nb = known.get(k);
+                            if (nb != null && seen.add(k)) {
+                                q.add(nb);
                             }
                         }
                     }
                 }
-                for (int m : members) {
-                    out.put(m, members.size());
-                }
             }
-            comps = out;
-            compsVersion = version;
-            size.clear();
-            return comps;
+            return n;
         }
 
         private boolean passesFilters(ClientOre o) {
@@ -223,8 +215,11 @@ final class Agents {
             if (filters.packet() && !o.viaChunk) {
                 return false;
             }
+            if (filters.revisit() && o.changed) {
+                return false; // 같은 청크를 다시 받았는데 처음엔 없던 광석
+            }
             if (filters.shape()) {
-                int n = components().getOrDefault(SimWorld.idx(o.x, o.y, o.z), 1);
+                int n = componentSize(o, filters.maxSize());
                 if (n < filters.minSize() || n > filters.maxSize()) {
                     return false;
                 }
