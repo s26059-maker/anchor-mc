@@ -26,6 +26,8 @@ import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.event.world.ChunkUnloadEvent;
@@ -39,10 +41,12 @@ import java.util.List;
 final class AnchorListener implements Listener {
     private final DecoyEngine engine;
     private final PlayerRegistry registry;
+    private final Plugin plugin;
 
-    AnchorListener(DecoyEngine engine, PlayerRegistry registry) {
+    AnchorListener(DecoyEngine engine, PlayerRegistry registry, Plugin plugin) {
         this.engine = engine;
         this.registry = registry;
+        this.plugin = plugin;
     }
 
     private static long now() {
@@ -170,8 +174,29 @@ final class AnchorListener implements Listener {
     public void onGameMode(PlayerGameModeChangeEvent e) {
         Player p = e.getPlayer();
         GameMode gm = e.getNewGameMode();
-        boolean eligible = gm == GameMode.SURVIVAL || gm == GameMode.ADVENTURE;
+        boolean eligible = registry.eligibleMode(gm);
         registry.set(p.getUniqueId(), p.getWorld().getName(), eligible);
-        engine.dropPlayer(p.getUniqueId(), now(), true);
+        engine.setEvidenceExcluded(p.getUniqueId(), gm == GameMode.SPECTATOR);
+        if (!eligible) {
+            engine.dropPlayer(p.getUniqueId(), now(), true);
+        } else {
+            recoverSoon(p); // 자격이 있는 모드로 (다시) 바뀌었다: 바뀐 뒤의 상태로 다시 보여 준다
+        }
+    }
+
+    /** 리스폰: 자격을 되찾는 순간이다. 죽어 있는 동안 거둔 미끼를, 클라이언트가 아직 가진 청크에 다시 보여 준다. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onRespawn(PlayerRespawnEvent e) {
+        recoverSoon(e.getPlayer());
+    }
+
+    /** 이벤트 시점에는 게임모드·생사가 아직 옛 값이라, 한 틱 뒤 메인 스레드에서 표를 고치고 엔진에 알린다(엔진이 복구한다). */
+    private void recoverSoon(Player p) {
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (p.isOnline()) {
+                registry.update(p);
+                engine.tick(registry.stateOf(p), now());
+            }
+        });
     }
 }

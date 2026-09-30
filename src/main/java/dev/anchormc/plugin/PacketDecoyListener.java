@@ -27,6 +27,7 @@ final class PacketDecoyListener extends PacketListenerAbstract {
     private final DecoyEngine engine;
     private final PacketStateTable table;
     private final PlayerRegistry registry;
+    /** 메모리에만 있는 카운터: 이 플러그인 인스턴스가 켜진 뒤의 횟수다(서버 재시작·플러그인 다시 켜기로 0에서 다시 센다). */
     private final AtomicLong patched = new AtomicLong(), failures = new AtomicLong();
 
     PacketDecoyListener(Plugin plugin, DecoyEngine engine, PacketStateTable table, PlayerRegistry registry) {
@@ -69,7 +70,7 @@ final class PacketDecoyListener extends PacketListenerAbstract {
             patched.incrementAndGet();
             Bukkit.getScheduler().runTask(plugin, () -> {
                 Player p = Bukkit.getPlayer(id);
-                engine.registerChunk(p == null ? PlayerRegistry.gone(id, info) : PlayerRegistry.stateOf(p), patch, Bukkit.getCurrentTick());
+                engine.registerChunk(p == null ? PlayerRegistry.gone(id, info) : registry.stateOf(p), patch, Bukkit.getCurrentTick());
             });
         } catch (Throwable t) {
             if (failures.incrementAndGet() <= 3) {

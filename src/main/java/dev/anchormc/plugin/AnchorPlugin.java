@@ -63,6 +63,7 @@ public final class AnchorPlugin extends JavaPlugin {
             return;
         }
         applyShadowMode(getConfig());
+        applyDebugSpectator(getConfig());
 
         if (!getDataFolder().exists() && !getDataFolder().mkdirs()) {
             getLogger().warning("데이터 폴더를 만들 수 없다");
@@ -73,7 +74,7 @@ public final class AnchorPlugin extends JavaPlugin {
                 secret, System::currentTimeMillis, this::onConfirmed);
         java.util.Arrays.fill(secret, (byte) 0);
 
-        getServer().getPluginManager().registerEvents(new AnchorListener(core.decoys, registry), this);
+        getServer().getPluginManager().registerEvents(new AnchorListener(core.decoys, registry, this), this);
         for (Player p : Bukkit.getOnlinePlayers()) {
             registry.update(p);
         }
@@ -173,7 +174,7 @@ public final class AnchorPlugin extends JavaPlugin {
         long tick = now();
         for (Player p : Bukkit.getOnlinePlayers()) {
             registry.update(p);
-            core.decoys.tick(PlayerRegistry.stateOf(p), tick);
+            core.decoys.tick(registry.stateOf(p), tick);
         }
         core.decoys.expire(tick);
     }
@@ -274,13 +275,41 @@ public final class AnchorPlugin extends JavaPlugin {
                 v.confirmed() ? "확정(섀도)" : "미확정")));
     }
 
+    static boolean readAllowSpectator(FileConfiguration c) {
+        return c.getBoolean("debug.allow-spectator", false);
+    }
+
+    /** 테스트용 옵션: 켜져 있으면 콘솔에 크게 경고한다(실운영에 켜 둔 채 두지 않게). 시작과 reload 때마다 부른다. */
+    private void applyDebugSpectator(FileConfiguration c) {
+        boolean on = readAllowSpectator(c);
+        registry.setAllowSpectator(on);
+        if (on) {
+            for (String line : SPECTATOR_WARNING) {
+                getLogger().warning(line);
+            }
+        }
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            registry.update(p); // 다음 1초 틱이 자격 변화(관전자 복구·거둠)를 반영한다
+        }
+    }
+
+    static final String[] SPECTATOR_WARNING = {
+            "################################################################",
+            "#  경고: debug.allow-spectator: true  (테스트 전용 옵션)         #",
+            "#  관전자 모드 플레이어도 미끼를 받고, 그 반응은 증거에서 뺀다.  #",
+            "#  실운영에서는 반드시 false로 되돌려라.                         #",
+            "################################################################"};
+
     private void stats(CommandSender s) {
+        if (registry.allowSpectator()) {
+            s.sendMessage(Component.text("디버그: 관전자 허용 중 (debug.allow-spectator: true, 실운영에서는 꺼라)"));
+        }
         EvidenceEngine.Stats st = core.evidence.stats();
         s.sendMessage(Component.text(String.format(Locale.ROOT,
-                "위약 %d/%d 반응률 %s → 현재 p0 = %.4f (배수 %.1f) | 확정 계정 %d | 판정 전 회수 %d | 청크 패킷에 미끼 삽입 %d회(실패 %d회) | 광맥 표본 %d개(%s)",
+                "위약 %d/%d 반응률 %s → 현재 p0 = %.4f (배수 %.1f) | 확정 계정 %d | 판정 전 회수 %d | 이번 기동 이후 청크 패킷에 미끼 삽입 %d회(실패 %d회, 재시작하면 0부터) | 자격 회복으로 다시 보인 쌍 %d | 광맥 표본 %d개(%s)",
                 st.placeboHits(), st.placeboN(), pct(st.placeboRate()), st.p0(),
                 getConfig().getDouble("p0-multiplier", 2.0), st.confirmedAccounts(), core.voided(),
-                packetListener.patchedChunks(), packetListener.failures(),
+                packetListener.patchedChunks(), packetListener.failures(), core.decoys.restoredPairs(),
                 core.decoys.profile().bankSize(), core.decoys.profile().usingBank() ? "표본 사용" : "바닐라 기본값 사용")));
         s.sendMessage(Component.text(retireSummary()));
     }
@@ -360,6 +389,7 @@ public final class AnchorPlugin extends JavaPlugin {
             core.decoys.setParams(readParams(getConfig()));
             core.evidence.setParams(readEvidenceParams(getConfig()));
             applyShadowMode(getConfig());
+            applyDebugSpectator(getConfig());
             s.sendMessage(Component.text("설정을 다시 읽었다(secret-seed 변경은 서버를 다시 켜야 적용된다)"));
         } catch (IllegalArgumentException e) {
             s.sendMessage(Component.text("config.yml 오류, 이전 설정 유지: " + e.getMessage()));

@@ -46,6 +46,12 @@ sites:
   # 조건에 맞는 뭉치를 못 찾으면 이만큼 시도하고 포기.
   max-attempts: 60
 
+# 테스트 전용. 실운영에서는 false로 둔다.
+debug:
+  # true면 관전자 모드 플레이어도 미끼 자격을 잃지 않는다(관전자로 벽 속을 날며 미끼가 보이는지 실서버에서 눈으로 확인하는 용도).
+  # 관전자 상태에서의 반응은 증거(e-value)에 넣지 않는다(표시만 유지). 켜면 시작·reload 때 콘솔에 경고, /anchor stats 첫 줄에 표시된다.
+  allow-spectator: false
+
 storage:
   # 플러그인 폴더 안의 SQLite 파일.
   file: anchor.db
