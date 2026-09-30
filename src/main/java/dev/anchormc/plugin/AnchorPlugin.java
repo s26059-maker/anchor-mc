@@ -1,16 +1,19 @@
 package dev.anchormc.plugin;
 
+import com.github.retrooper.packetevents.PacketEvents;
 import dev.anchormc.AnchorCore;
 import dev.anchormc.core.BlockView;
+import dev.anchormc.core.DecoyEngine;
 import dev.anchormc.core.Params;
-import dev.anchormc.core.PlayerState;
+import dev.anchormc.core.SiteKind;
 import dev.anchormc.evidence.AsyncStore;
 import dev.anchormc.evidence.EvidenceEngine;
 import dev.anchormc.evidence.EvidenceParams;
 import dev.anchormc.evidence.SqliteStore;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
-import org.bukkit.GameMode;
+import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -19,28 +22,40 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.random.RandomGenerator;
 
 public final class AnchorPlugin extends JavaPlugin {
     private AnchorCore core;
     private AsyncStore store;
     private BukkitTask spawnTask;
     private BukkitTask verifyTask;
+    private PacketDecoyListener packetListener;
+    private final PlayerRegistry registry = new PlayerRegistry();
     private final Map<String, BlockView> views = new HashMap<>();
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        if (getServer().getPluginManager().getPlugin("packetevents") == null) {
+            getLogger().severe("PacketEvents 플러그인(2.14.0 이상)이 필요하다. 설치한 뒤 다시 켜라.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
         Params params;
         EvidenceParams ep;
+        byte[] secret;
         try {
             params = readParams(getConfig());
             ep = readEvidenceParams(getConfig());
+            secret = secret();
         } catch (IllegalArgumentException e) {
             getLogger().severe("config.yml 오류: " + e.getMessage());
             getServer().getPluginManager().disablePlugin(this);
@@ -54,17 +69,26 @@ public final class AnchorPlugin extends JavaPlugin {
         store = new AsyncStore(new SqliteStore(getDataFolder().toPath().resolve(getConfig().getString("storage.file", "anchor.db"))),
                 t -> getLogger().severe("증거 저장 실패: " + t));
         core = new AnchorCore(params, ep, this::viewOf, new BukkitDisplay(), store,
-                RandomGenerator.getDefault(), System::currentTimeMillis, this::onConfirmed);
+                secret, System::currentTimeMillis, this::onConfirmed);
+        java.util.Arrays.fill(secret, (byte) 0);
 
-        getServer().getPluginManager().registerEvents(new AnchorListener(core.decoys), this);
-        // 1초마다 배치·만료, 0.5초마다 노출 재검사(이벤트 없이 바뀐 경우 대비).
+        getServer().getPluginManager().registerEvents(new AnchorListener(core.decoys, registry), this);
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            registry.update(p);
+        }
+        packetListener = new PacketDecoyListener(this, core.decoys, buildStateTable(), registry);
+        PacketEvents.getAPI().getEventManager().registerListener(packetListener);
+        // 1초마다 위치 판정·만료·플레이어 표 갱신, 0.5초마다 노출 재검사(이벤트 없이 바뀐 경우 대비).
         spawnTask = getServer().getScheduler().runTaskTimer(this, this::secondTick, 20L, 20L);
         verifyTask = getServer().getScheduler().runTaskTimer(this, () -> core.decoys.verifyAll(now()), 10L, 10L);
-        getLogger().info("anchor-mc 켜짐(섀도 모드: 처벌하지 않고 기록·알림만)");
+        getLogger().info("anchor-mc 켜짐(섀도 모드: 처벌하지 않고 기록·알림만, 미끼는 청크 데이터 패킷에 직접 삽입)");
     }
 
     @Override
     public void onDisable() {
+        if (packetListener != null && PacketEvents.getAPI() != null) {
+            PacketEvents.getAPI().getEventManager().unregisterListener(packetListener);
+        }
         if (spawnTask != null) {
             spawnTask.cancel();
         }
@@ -74,6 +98,7 @@ public final class AnchorPlugin extends JavaPlugin {
         if (core != null) {
             core.decoys.shutdown(now()); // 모든 미끼를 진짜 블록으로 되돌린다
         }
+        registry.clear();
         if (store != null) {
             store.close();
         }
@@ -88,18 +113,66 @@ public final class AnchorPlugin extends JavaPlugin {
         return w == null ? null : views.computeIfAbsent(world, k -> new BukkitBlockView(w));
     }
 
-    static PlayerState stateOf(Player p) {
-        GameMode gm = p.getGameMode();
-        boolean eligible = (gm == GameMode.SURVIVAL || gm == GameMode.ADVENTURE) && p.isOnline() && !p.isDead();
-        var l = p.getLocation();
-        return new PlayerState(p.getUniqueId(), p.getName(), l.getWorld().getName(), l.getX(), l.getY() + 1.0, l.getZ(), eligible);
+    /**
+     * 모든 블록 재질을 미리(메인 스레드) 분류해 두고 패킷 스레드는 이름으로 조회만 한다.
+     * 분류 규칙은 BukkitBlockView와 같은 것(불투명·안정)이라 패킷 시야와 실제 월드 시야의 판정이 일치한다.
+     */
+    private PacketStateTable buildStateTable() {
+        Map<String, Integer> flags = new HashMap<>();
+        for (Material m : Material.values()) {
+            if (m.isLegacy() || !m.isBlock()) {
+                continue;
+            }
+            int f = 0;
+            if (m.isOccluding() && !m.hasGravity() && !BukkitBlockView.UNSTABLE.contains(m)) {
+                f |= PacketStateTable.OPAQUE;
+            }
+            if (m == Material.STONE) {
+                f |= PacketStateTable.STONE;
+            } else if (m == Material.DEEPSLATE) {
+                f |= PacketStateTable.DEEPSLATE;
+            } else if (m == Material.DIAMOND_ORE || m == Material.DEEPSLATE_DIAMOND_ORE) {
+                f |= PacketStateTable.DIAMOND;
+            }
+            flags.put(m.getKey().getKey(), f);
+        }
+        Map<String, Integer> frozen = Map.copyOf(flags);
+        var version = PacketEvents.getAPI().getServerManager().getVersion().toClientVersion();
+        return new PacketStateTable(version, name -> frozen.getOrDefault(name, 0));
     }
 
-    /** 1초마다 위치 판정과 만료. 새 자리는 여기서 만들지 않는다(청크 전송 이벤트에서만). */
+    /**
+     * 서버 비밀 시드. 비어 있으면 새로 만들어 config.yml에 저장한다. 어떤 로그·메시지에도 값을 쓰지 않는다.
+     * 16진수 문자열(32자 이상)이면 그 바이트, 아니면 문자열 자체(16자 이상)를 바이트로 쓴다.
+     */
+    private byte[] secret() {
+        String v = getConfig().getString("secret-seed", "");
+        if (v == null || v.isBlank()) {
+            byte[] fresh = new byte[32];
+            new SecureRandom().nextBytes(fresh);
+            v = HexFormat.of().formatHex(fresh);
+            getConfig().set("secret-seed", v);
+            saveConfig();
+            java.util.Arrays.fill(fresh, (byte) 0);
+            getLogger().warning("secret-seed가 비어 있어 새로 만들어 config.yml에 저장했다(값은 출력하지 않는다). 이 값을 바꾸면 미끼 자리가 전부 바뀐다.");
+        }
+        v = v.strip();
+        if (v.length() >= 32 && v.length() % 2 == 0 && v.chars().allMatch(c -> Character.digit(c, 16) >= 0)) {
+            return HexFormat.of().parseHex(v);
+        }
+        byte[] raw = v.getBytes(StandardCharsets.UTF_8);
+        if (raw.length < 16) {
+            throw new IllegalArgumentException("secret-seed는 16자 이상이어야 한다");
+        }
+        return raw;
+    }
+
+    /** 1초마다 위치 판정과 만료, 패킷 스레드가 읽는 플레이어 표 갱신. 새 자리는 여기서 만들지 않는다(청크 패킷에서만). */
     private void secondTick() {
         long tick = now();
         for (Player p : Bukkit.getOnlinePlayers()) {
-            core.decoys.tick(stateOf(p), tick);
+            registry.update(p);
+            core.decoys.tick(PlayerRegistry.stateOf(p), tick);
         }
         core.decoys.expire(tick);
     }
@@ -128,9 +201,6 @@ public final class AnchorPlugin extends JavaPlugin {
                 c.getDouble("retract-distance", d.retractDistance()),
                 c.getInt("sites.y-min", d.yMin()),
                 c.getInt("sites.y-max", d.yMax()),
-                c.getDouble("sites.min-distance", d.minDistance()),
-                c.getInt("sites.max-active-pairs", d.maxActivePairs()),
-                Math.round(c.getDouble("sites.cooldown-seconds", d.cooldownTicks() / 20.0) * 20),
                 c.getInt("sites.max-attempts", d.maxAttempts()),
                 c.getDouble("sites.pairs-per-chunk", d.pairsPerChunk()),
                 c.getInt("sites.profile-samples", d.profileSamples()));
@@ -161,6 +231,8 @@ public final class AnchorPlugin extends JavaPlugin {
 
     // ---- 명령어 ----
 
+    private static final String USAGE = "/anchor status <플레이어> | stats | debug <플레이어> | reload";
+
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (!sender.hasPermission("anchor.admin")) {
@@ -168,14 +240,15 @@ public final class AnchorPlugin extends JavaPlugin {
             return true;
         }
         if (args.length == 0) {
-            sender.sendMessage(Component.text("/anchor status <플레이어> | stats | reload"));
+            sender.sendMessage(Component.text(USAGE));
             return true;
         }
         switch (args[0].toLowerCase(Locale.ROOT)) {
             case "status" -> status(sender, args);
             case "stats" -> stats(sender);
+            case "debug" -> debug(sender, args);
             case "reload" -> reload(sender);
-            default -> sender.sendMessage(Component.text("/anchor status <플레이어> | stats | reload"));
+            default -> sender.sendMessage(Component.text(USAGE));
         }
         return true;
     }
@@ -202,9 +275,62 @@ public final class AnchorPlugin extends JavaPlugin {
     private void stats(CommandSender s) {
         EvidenceEngine.Stats st = core.evidence.stats();
         s.sendMessage(Component.text(String.format(Locale.ROOT,
-                "위약 %d/%d 반응률 %s → 현재 p0 = %.4f (배수 %.1f) | 확정 계정 %d | 판정 전 회수 %d",
+                "위약 %d/%d 반응률 %s → 현재 p0 = %.4f (배수 %.1f) | 확정 계정 %d | 판정 전 회수 %d | 청크 패킷에 미끼 삽입 %d회(실패 %d회) | 광맥 표본 %d개(%s)",
                 st.placeboHits(), st.placeboN(), pct(st.placeboRate()), st.p0(),
-                getConfig().getDouble("p0-multiplier", 2.0), st.confirmedAccounts(), core.voided())));
+                getConfig().getDouble("p0-multiplier", 2.0), st.confirmedAccounts(), core.voided(),
+                packetListener.patchedChunks(), packetListener.failures(),
+                core.decoys.profile().bankSize(), core.decoys.profile().usingBank() ? "표본 사용" : "바닐라 기본값 사용")));
+    }
+
+    /**
+     * 그 플레이어에게 계획된 미끼·위약 좌표와 상태. 실서버에서 미끼가 실제로 나갔는지 확인하는 용도다.
+     * 좌표가 그대로 나오므로 관리자 전용이고 시드는 절대 나오지 않는다.
+     */
+    private void debug(CommandSender s, String[] args) {
+        if (args.length < 2) {
+            s.sendMessage(Component.text("/anchor debug <플레이어>"));
+            return;
+        }
+        Player t = Bukkit.getPlayerExact(args[1]);
+        if (t == null) {
+            s.sendMessage(Component.text(args[1] + ": 접속 중이 아니다"));
+            return;
+        }
+        List<DecoyEngine.SiteDebug> all = core.decoys.debugSites(t.getUniqueId());
+        int active = 0, done = 0, retired = 0, waiting = 0, decoys = 0;
+        for (DecoyEngine.SiteDebug d : all) {
+            if (d.kind() == SiteKind.DECOY) {
+                decoys++;
+            }
+            if (d.status().startsWith("활성")) {
+                active++;
+            } else if (d.status().startsWith("판정 완료")) {
+                done++;
+            } else if (d.status().startsWith("회수됨")) {
+                retired++;
+            } else {
+                waiting++;
+            }
+        }
+        s.sendMessage(Component.text(String.format(Locale.ROOT,
+                "%s: 계획된 자리 %d개(미끼 %d, 위약 %d) | 활성 %d, 판정 완료 %d, 회수됨 %d, 대기(청크 밖) %d | 이 플레이어 청크 패킷에 삽입한 총 횟수는 /anchor stats",
+                t.getName(), all.size(), decoys, all.size() - decoys, active, done, retired, waiting)));
+        Location at = t.getLocation();
+        List<DecoyEngine.SiteDebug> near = new ArrayList<>(all);
+        near.sort(Comparator.comparingDouble(d -> d.pos().world().equals(at.getWorld().getName())
+                ? d.pos().distanceTo(at.getX(), at.getY(), at.getZ()) : Double.MAX_VALUE));
+        int shown = 0;
+        for (DecoyEngine.SiteDebug d : near) {
+            if (shown++ >= 40) {
+                s.sendMessage(Component.text("... 가까운 40개만 보였다(전체 " + all.size() + "개)"));
+                break;
+            }
+            double dist = d.pos().world().equals(at.getWorld().getName())
+                    ? d.pos().distanceTo(at.getX(), at.getY(), at.getZ()) : Double.NaN;
+            s.sendMessage(Component.text(String.format(Locale.ROOT, "[%s] %s (%d, %d, %d) %d블록 · 거리 %s | %s",
+                    d.kind() == SiteKind.DECOY ? "미끼" : "위약", d.pos().world(), d.pos().x(), d.pos().y(), d.pos().z(),
+                    d.blocks(), Double.isNaN(dist) ? "-" : String.format(Locale.ROOT, "%.1f", dist), d.status())));
+        }
     }
 
     private void reload(CommandSender s) {
@@ -213,7 +339,7 @@ public final class AnchorPlugin extends JavaPlugin {
             core.decoys.setParams(readParams(getConfig()));
             core.evidence.setParams(readEvidenceParams(getConfig()));
             applyShadowMode(getConfig());
-            s.sendMessage(Component.text("설정을 다시 읽었다"));
+            s.sendMessage(Component.text("설정을 다시 읽었다(secret-seed 변경은 서버를 다시 켜야 적용된다)"));
         } catch (IllegalArgumentException e) {
             s.sendMessage(Component.text("config.yml 오류, 이전 설정 유지: " + e.getMessage()));
         }
@@ -227,12 +353,12 @@ public final class AnchorPlugin extends JavaPlugin {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
-            for (String o : List.of("status", "stats", "reload")) {
+            for (String o : List.of("status", "stats", "debug", "reload")) {
                 if (o.startsWith(args[0].toLowerCase(Locale.ROOT))) {
                     out.add(o);
                 }
             }
-        } else if (args.length == 2 && args[0].equalsIgnoreCase("status")) {
+        } else if (args.length == 2 && (args[0].equalsIgnoreCase("status") || args[0].equalsIgnoreCase("debug"))) {
             for (Player p : Bukkit.getOnlinePlayers()) {
                 if (p.getName().toLowerCase(Locale.ROOT).startsWith(args[1].toLowerCase(Locale.ROOT))) {
                     out.add(p.getName());

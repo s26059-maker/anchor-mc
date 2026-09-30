@@ -1,0 +1,71 @@
+package dev.anchormc.core;
+
+import java.util.List;
+
+/**
+ * 한 청크의 (미끼, 위약) 쌍 한 개의 계획. 좌표·동전은 계획 시점에 정해져 바뀌지 않는다(같은 청크를 다시 받아도 같다).
+ * 상태만 바뀐다: 활성 → 판정 완료(CONSUMED) → 회수(RETIRED). RETIRED는 다시 보내지 않는다.
+ */
+public final class PlannedPair {
+    static final int ACTIVE = 0, CONSUMED = 1, RETIRED = 2;
+
+    public final long pairId;
+    public final int slot;
+    private final List<Voxel> a, b;
+    private final boolean aDecoy;
+    private volatile int state = ACTIVE;
+    private volatile Result result;
+
+    PlannedPair(long pairId, int slot, List<Voxel> a, List<Voxel> b, boolean aDecoy) {
+        this.pairId = pairId;
+        this.slot = slot;
+        this.a = List.copyOf(a);
+        this.b = List.copyOf(b);
+        this.aDecoy = aDecoy;
+    }
+
+    /** 계획에서 먼저 뽑힌 뭉치와 나중에 뽑힌 뭉치(어느 쪽이 미끼인지와 무관한 순서). */
+    List<Voxel> first() {
+        return a;
+    }
+
+    List<Voxel> second() {
+        return b;
+    }
+
+    boolean firstIsDecoy() {
+        return aDecoy;
+    }
+
+    public List<Voxel> decoy() {
+        return aDecoy ? a : b;
+    }
+
+    public List<Voxel> placebo() {
+        return aDecoy ? b : a;
+    }
+
+    public boolean retired() {
+        return state == RETIRED;
+    }
+
+    /** 한쪽이라도 HIT/MISS가 나서 증거에 한 번 쓰였다. 다시 받으면 미끼는 보이되 새 관측은 만들지 않는다. */
+    public boolean consumed() {
+        return state == CONSUMED;
+    }
+
+    public Result result() {
+        return result;
+    }
+
+    void consume(Result r) {
+        if (state == ACTIVE) {
+            result = r;
+            state = CONSUMED;
+        }
+    }
+
+    void retire() {
+        state = RETIRED;
+    }
+}

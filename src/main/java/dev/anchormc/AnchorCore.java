@@ -25,12 +25,27 @@ public final class AnchorCore {
     public final EvidenceEngine evidence;
     private int voided;
 
+    /** 시뮬레이터·테스트용: 비밀 시드를 rng에서 뽑는다. */
     public AnchorCore(Params params, EvidenceParams evidenceParams,
                       Function<String, BlockView> views, Display display, EvidenceStore store,
                       RandomGenerator rng, LongSupplier millis,
                       Consumer<EvidenceEngine.Confirmation> onConfirm) {
+        this(evidenceParams, store, millis, onConfirm, sink -> new DecoyEngine(params, views, display, sink, rng));
+    }
+
+    /** 서버용: 비밀 시드를 config에서 받는다. */
+    public AnchorCore(Params params, EvidenceParams evidenceParams,
+                      Function<String, BlockView> views, Display display, EvidenceStore store,
+                      byte[] secret, LongSupplier millis,
+                      Consumer<EvidenceEngine.Confirmation> onConfirm) {
+        this(evidenceParams, store, millis, onConfirm, sink -> new DecoyEngine(params, views, display, sink, secret));
+    }
+
+    private AnchorCore(EvidenceParams evidenceParams, EvidenceStore store, LongSupplier millis,
+                       Consumer<EvidenceEngine.Confirmation> onConfirm,
+                       Function<Consumer<Outcome>, DecoyEngine> makeEngine) {
         this.evidence = new EvidenceEngine(evidenceParams, store, millis);
-        this.decoys = new DecoyEngine(params, views, display, (Outcome o) -> {
+        this.decoys = makeEngine.apply((Outcome o) -> {
             if (o.result() == Result.VOID) {
                 voided++;
                 evidence.voidPair(o.pairId());
@@ -40,7 +55,7 @@ public final class AnchorCore {
             if (c != null) {
                 onConfirm.accept(c);
             }
-        }, rng);
+        });
     }
 
     /** 판정 전에 거둬 증거에서 뺀 자리 수. */

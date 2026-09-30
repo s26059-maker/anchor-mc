@@ -13,10 +13,12 @@ public final class Site {
     public final List<Voxel> voxels;
     public final long pairId;
     public final long createdTick;
+    /** 이 자리가 속한 계획 쌍(테스트용 단독 자리는 null). */
+    final PlannedPair plan;
     Result result;
     boolean active = true;
 
-    Site(UUID player, String playerName, SiteKind kind, List<Voxel> voxels, long pairId, long createdTick) {
+    Site(UUID player, String playerName, SiteKind kind, List<Voxel> voxels, long pairId, long createdTick, PlannedPair plan) {
         this.player = player;
         this.playerName = playerName;
         this.kind = kind;
@@ -24,11 +26,12 @@ public final class Site {
         this.pos = voxels.get(0).pos();
         this.pairId = pairId;
         this.createdTick = createdTick;
+        this.plan = plan;
     }
 
     /** 블록 하나짜리(테스트용). */
     Site(UUID player, String playerName, SiteKind kind, Pos pos, Host host, long createdTick) {
-        this(player, playerName, kind, List.of(new Voxel(pos, host)), 0, createdTick);
+        this(player, playerName, kind, List.of(new Voxel(pos, host)), 0, createdTick, null);
     }
 
     /** 점에서 뭉치의 가장 가까운 블록 중심까지의 거리. */

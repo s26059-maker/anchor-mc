@@ -5,6 +5,7 @@ import dev.anchormc.core.Pos;
 import io.papermc.paper.event.packet.PlayerChunkLoadEvent;
 import io.papermc.paper.event.packet.PlayerChunkUnloadEvent;
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -23,6 +24,7 @@ import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerGameModeChangeEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.world.ChunkUnloadEvent;
@@ -35,9 +37,11 @@ import java.util.List;
  */
 final class AnchorListener implements Listener {
     private final DecoyEngine engine;
+    private final PlayerRegistry registry;
 
-    AnchorListener(DecoyEngine engine) {
+    AnchorListener(DecoyEngine engine, PlayerRegistry registry) {
         this.engine = engine;
+        this.registry = registry;
     }
 
     private static long now() {
@@ -118,19 +122,15 @@ final class AnchorListener implements Listener {
     }
 
     /**
-     * 플레이어에게 청크가 전송될 때(Paper 문서: "Is called when a Player receives a Chunk"). 여기서만 새 쌍을 만들고
-     * 미끼는 즉시 보낸다. 진짜 광석은 이 청크 데이터에 이미 들어 있으니, 미끼가 "나중에 나타나는" 경로는 없다.
+     * 플레이어에게 청크가 전송될 때. 1.2단계부터 미끼는 여기서 만들지 않는다(청크 데이터 패킷 안에 직접 들어간다, PacketDecoyListener).
+     * 여기서는 로드된 청크에서 진짜 광맥 표본을 배우기만 한다(메인 스레드, 표본이 다 모이면 바로 돌아간다).
      */
     @EventHandler(priority = EventPriority.MONITOR)
     public void onChunkSent(PlayerChunkLoadEvent e) {
-        Player p = e.getPlayer();
-        if (!p.getWorld().equals(e.getChunk().getWorld())) {
-            return;
-        }
-        engine.onChunkSent(AnchorPlugin.stateOf(p), e.getChunk().getX(), e.getChunk().getZ(), now());
+        engine.learnChunk(e.getChunk().getWorld().getName(), e.getChunk().getX(), e.getChunk().getZ());
     }
 
-    /** 플레이어의 클라이언트가 청크를 버렸다: 그 청크의 자리는 되돌릴 필요 없이 정리한다. */
+    /** 플레이어의 클라이언트가 청크를 버렸다: 그 청크의 자리는 되돌릴 필요 없이 정리한다(다시 받으면 같은 미끼가 패킷에 들어간다). */
     @EventHandler(priority = EventPriority.MONITOR)
     public void onChunkDropped(PlayerChunkUnloadEvent e) {
         engine.dropChunkFor(e.getPlayer().getUniqueId(), e.getChunk().getWorld().getName(),
@@ -142,19 +142,29 @@ final class AnchorListener implements Listener {
         engine.dropChunk(e.getWorld().getName(), e.getChunk().getX(), e.getChunk().getZ(), now());
     }
 
-    @EventHandler
-    public void onQuit(PlayerQuitEvent e) {
-        engine.dropPlayer(e.getPlayer().getUniqueId(), now(), false);
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onJoin(PlayerJoinEvent e) {
+        registry.update(e.getPlayer());
     }
 
     @EventHandler
+    public void onQuit(PlayerQuitEvent e) {
+        registry.remove(e.getPlayer().getUniqueId());
+        engine.forgetPlayer(e.getPlayer().getUniqueId(), now());
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
     public void onWorldChange(PlayerChangedWorldEvent e) {
+        registry.update(e.getPlayer());
         engine.dropPlayer(e.getPlayer().getUniqueId(), now(), false);
     }
 
     @EventHandler
     public void onGameMode(PlayerGameModeChangeEvent e) {
         Player p = e.getPlayer();
+        GameMode gm = e.getNewGameMode();
+        boolean eligible = gm == GameMode.SURVIVAL || gm == GameMode.ADVENTURE;
+        registry.set(p.getUniqueId(), p.getWorld().getName(), eligible);
         engine.dropPlayer(p.getUniqueId(), now(), true);
     }
 }

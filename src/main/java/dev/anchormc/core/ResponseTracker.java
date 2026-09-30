@@ -69,10 +69,9 @@ public final class ResponseTracker {
                 if (d <= params.reactionRadius()) {
                     resolve(s, Result.HIT, tick);
                 } else if (d > params.giveUpDistance()) {
-                    retire(s, Result.MISS, tick, true);
+                    // 판정만 하고 화면에서는 거두지 않는다: 진짜 광석은 멀어진다고 사라지지 않는다.
+                    resolve(s, Result.MISS, tick);
                 }
-            } else if (d > params.giveUpDistance()) {
-                retire(s, null, tick, true);
             }
         }
     }
@@ -113,13 +112,26 @@ public final class ResponseTracker {
         }
     }
 
-    /** 시간 창이 끝난 자리를 정리한다. */
+    /**
+     * 시간 창이 끝난 자리를 MISS로 판정한다. 1.2단계부터 화면에서는 거두지 않는다(진짜 광석은 시간이 지나도 사라지지 않으므로
+     * 미끼가 저절로 사라지면 그게 단서가 된다). 노출 회수·청크 언로드가 아니면 남아 있고, 판정만 끝난다.
+     */
     public void expire(long tick) {
         for (Site s : allActive()) {
-            if (tick - s.createdTick >= params.windowTicks()) {
-                retire(s, Result.MISS, tick, true);
+            if (s.result == null && tick - s.createdTick >= params.windowTicks()) {
+                resolve(s, Result.MISS, tick);
             }
         }
+    }
+
+    /** 이 플레이어에게 이 쌍의 자리가 이미 있나. */
+    boolean hasPair(UUID player, long pairId) {
+        for (Site s : sitesOf(player)) {
+            if (s.pairId == pairId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public void dropPlayer(UUID player, long tick, boolean restoreBlock) {

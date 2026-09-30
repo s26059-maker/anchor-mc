@@ -1,45 +1,78 @@
 package dev.anchormc.core;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.random.RandomGenerator;
 
 /**
  * 미끼·위약 배치와 회수. Bukkit을 모른다(BlockView·Display로만 바깥과 닿는다).
- * 배치는 플레이어에게 청크가 전송되는 순간({@link #onChunkSent})에만 일어나고, 미끼는 그 즉시 나간다.
- * 미끼가 클라이언트로 나가는 길은 {@link #showGuarded} 하나뿐이고 거기서 불변식 1을 뭉치의 모든 블록에 대해 다시 검사한다.
+ *
+ * 1.2단계의 흐름(플러그인):
+ * 1. 서버가 청크 데이터 패킷을 보낼 때 패킷을 만드는 스레드가 {@link #prepareChunk}를 부른다. 패킷 자신의 블록 데이터를 BlockView로 삼아
+ *    (플레이어, 월드, 청크, 비밀 시드)만으로 쌍을 정하고(같은 청크를 다시 받아도 같다), 미끼 블록을 돌려준다. 플러그인은 그것만 패킷에 쓴다.
+ * 2. 메인 스레드가 {@link #registerChunk}로 그 쌍을 추적에 올리고 실제 월드로 한 번 더 봉인을 검사한다.
+ * 미끼가 클라이언트로 나가는 길은 prepareChunk의 DecoyGuard 검사(패킷 시야) 하나뿐이고, 회수는 Display.hide(블록 갱신)뿐이다.
+ * 시뮬레이터·테스트는 {@link #onChunkSent}로 위 두 단계를 한 번에 부른다(패킷에 넣는 대신 Display.show로 클라이언트에 전달).
  */
 public final class DecoyEngine {
+    private static final int PLANS_PER_PLAYER = 8192;
+
     private Params params;
     private final Function<String, BlockView> views;
-    private final RandomGenerator rng;
     private final ResponseTracker tracker;
     private final Display display;
-    private final Map<UUID, Long> nextSpawn = new HashMap<>();
-    private VeinProfile profile;
-    private long pairCounter;
+    private final Seeds seeds;
+    private volatile VeinProfile profile;
+    private volatile PairPlanner planner;
+    private final YBalance balance;
+    private final Map<UUID, Map<ChunkPlan.Key, ChunkPlan>> plans = new ConcurrentHashMap<>();
+    private final Map<Long, PlannedPair> pairsById = new ConcurrentHashMap<>();
+    private final AtomicLong visits = new AtomicLong();
+    private volatile boolean consistentRevisit = true;
 
+    /** 시뮬레이터·테스트용: 비밀 시드를 rng에서 뽑는다. */
     public DecoyEngine(Params params, Function<String, BlockView> views, Display display,
                        Consumer<Outcome> sink, RandomGenerator rng) {
+        this(params, views, display, sink, secretFrom(rng));
+    }
+
+    /** 서버용: 비밀 시드를 config에서 받는다. */
+    public DecoyEngine(Params params, Function<String, BlockView> views, Display display,
+                       Consumer<Outcome> sink, byte[] secret) {
         this.params = params;
         this.views = views;
         this.display = display;
-        this.rng = rng;
+        this.seeds = new Seeds(secret);
         this.profile = new VeinProfile(params.profileSamples());
+        this.balance = new YBalance(params.yMin(), params.yMax());
+        this.planner = new PairPlanner(seeds, profile, balance, params);
         this.tracker = new ResponseTracker(params, new ResponseTracker.Hooks() {
             @Override
             public void outcome(Outcome o) {
+                if (o.result() != Result.VOID) {
+                    PlannedPair pp = pairsById.get(o.pairId());
+                    if (pp != null) {
+                        pp.consume(o.result());
+                    }
+                }
                 sink.accept(o);
             }
 
             @Override
             public void retired(Site s, boolean restoreBlock) {
-                // 종류에 따라 달라지는 곳은 여기와 showGuarded뿐이다(위약은 보낸 적이 없으니 되돌릴 것도 없다).
+                // restoreBlock=false는 클라이언트가 청크를 버린 것(다시 받으면 같은 미끼가 돌아온다). true는 노출 위험·캐짐·자격 상실:
+                // 진짜 블록으로 되돌렸으니 이 쌍은 다시 보내지 않는다.
+                if (restoreBlock && s.plan != null) {
+                    s.plan.retire();
+                }
+                // 종류에 따라 달라지는 곳은 여기와 미끼를 내보내는 곳뿐이다(위약은 보낸 적이 없으니 되돌릴 것도 없다).
                 if (s.kind == SiteKind.DECOY && restoreBlock) {
                     List<Pos> ps = new ArrayList<>(s.voxels.size());
                     for (Voxel v : s.voxels) {
@@ -51,12 +84,31 @@ public final class DecoyEngine {
         });
     }
 
+    private static byte[] secretFrom(RandomGenerator rng) {
+        byte[] b = new byte[32];
+        for (int i = 0; i < 4; i++) {
+            long v = rng.nextLong();
+            for (int k = 0; k < 8; k++) {
+                b[i * 8 + k] = (byte) (v >>> (8 * k));
+            }
+        }
+        return b;
+    }
+
     public void setParams(Params p) {
         if (p.profileSamples() != params.profileSamples()) {
             this.profile = new VeinProfile(p.profileSamples());
         }
         this.params = p;
+        this.planner = new PairPlanner(seeds, profile, balance, p);
         tracker.setParams(p);
+    }
+
+    /**
+     * false면 같은 청크를 받을 때마다 새로 뽑는다(1.1단계의 동작을 재현하는 대조군용, 시뮬레이터만 쓴다).
+     */
+    public void setConsistentRevisit(boolean on) {
+        this.consistentRevisit = on;
     }
 
     public ResponseTracker tracker() {
@@ -80,156 +132,147 @@ public final class DecoyEngine {
         tracker.observePosition(p.id(), p.world(), p.x(), p.y(), p.z(), tick);
     }
 
+    // ---- 광맥 표본 학습(메인 스레드) ----
+
+    /** 로드된 청크에서 진짜 광맥 표본을 모은다. 메인 스레드에서만 부른다(실제 월드를 읽는다). */
+    public void learnChunk(String world, int cx, int cz) {
+        VeinProfile prof = profile;
+        if (!prof.wantsSamples()) {
+            return;
+        }
+        BlockView view = views.apply(world);
+        if (view != null && view.chunkLoaded(cx, cz)) {
+            VeinScanner.scanChunk(view, world, cx, cz, params.yMin(), params.yMax(), prof);
+        }
+    }
+
+    // ---- 1단계: 패킷을 만드는 스레드 ----
+
     /**
-     * 이 플레이어에게 청크 (cx, cz)가 전송됐다. 이때만 새 (미끼, 위약) 쌍을 만든다: 미끼는 즉시 보낸다.
-     * 진짜 광석도 청크와 함께 도착하므로, 미끼는 진짜와 같은 시점에 나타난다.
+     * 이 플레이어에게 가는 청크 (cx, cz) 데이터 패킷에 넣을 것을 정한다. 어느 스레드에서 불러도 된다(서버 월드를 읽지 않는다).
+     * chunkView는 패킷이 담은 블록 데이터로 만든 시야여야 한다. 반환된 decoyVoxels는 이미 이 시야에서 DecoyGuard를 통과했다.
+     */
+    public ChunkPlan.Patch prepareChunk(UUID player, String world, int cx, int cz, BlockView chunkView) {
+        long visit = consistentRevisit ? 0 : visits.incrementAndGet();
+        ChunkPlan.Key key = new ChunkPlan.Key(player, world, cx, cz, visit);
+        ChunkPlan plan = planFor(key, chunkView);
+        List<PlannedPair> live = new ArrayList<>();
+        List<Voxel> decoyVoxels = new ArrayList<>();
+        for (PlannedPair pp : plan.pairs()) {
+            if (pp.retired()) {
+                continue; // 이미 회수됐다: 다시 보내지 않는다
+            }
+            // 불변식 1을 패킷 경로에도 강제한다: 지금 보내는 데이터에서도 봉인돼 있지 않으면 이 쌍은 영영 접는다.
+            if (!sealedAll(chunkView, pp.decoy()) || !sealedAll(chunkView, pp.placebo())) {
+                pp.retire();
+                continue;
+            }
+            live.add(pp);
+            decoyVoxels.addAll(pp.decoy());
+        }
+        return new ChunkPlan.Patch(player, world, cx, cz, decoyVoxels, live);
+    }
+
+    private ChunkPlan planFor(ChunkPlan.Key key, BlockView view) {
+        Map<ChunkPlan.Key, ChunkPlan> mine = plans.computeIfAbsent(key.player(), k -> new LinkedHashMap<>(64, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<ChunkPlan.Key, ChunkPlan> e) {
+                if (size() > PLANS_PER_PLAYER) {
+                    e.getValue().pairs().forEach(pp -> pairsById.remove(pp.pairId));
+                    return true;
+                }
+                return false;
+            }
+        });
+        synchronized (mine) {
+            ChunkPlan p = mine.get(key);
+            if (p == null) {
+                p = planner.plan(key.player(), key.world(), key.cx(), key.cz(), key.visit(), view);
+                mine.put(key, p);
+                for (PlannedPair pp : p.pairs()) {
+                    pairsById.put(pp.pairId, pp);
+                }
+            }
+            return p;
+        }
+    }
+
+    // ---- 2단계: 메인 스레드 ----
+
+    /**
+     * prepareChunk로 패킷에 들어간 쌍을 추적에 올린다. 패킷을 만든 뒤 월드가 바뀌었을 수 있으므로 실제 월드로 다시 검사하고,
+     * 봉인이 깨졌으면 이미 나간 미끼를 진짜 블록으로 되돌린다(불변식 2·3). 플레이어가 자격을 잃었거나 월드가 달라도 되돌린다.
+     */
+    public void registerChunk(PlayerState p, ChunkPlan.Patch patch, long tick) {
+        BlockView live = views.apply(patch.world());
+        boolean allowed = p.eligible() && p.world().equals(patch.world()) && live != null;
+        for (PlannedPair pp : patch.pairs()) {
+            if (pp.retired()) {
+                hideVoxels(p.id(), pp.decoy());
+                continue;
+            }
+            if (!allowed || !sealedAll(live, pp.decoy()) || !sealedAll(live, pp.placebo())) {
+                if (allowed) {
+                    pp.retire(); // 월드가 바뀌어 봉인이 깨졌다: 다시 보내지 않는다
+                }
+                hideVoxels(p.id(), pp.decoy());
+                continue;
+            }
+            if (tracker.hasPair(p.id(), pp.pairId)) {
+                continue; // 같은 청크가 다시 전송됐다(언로드 없이): 이미 추적 중
+            }
+            // 자리는 종류와 무관한 순서(계획에서 뽑힌 순서)로 올린다.
+            Site sa = new Site(p.id(), p.name(), pp.firstIsDecoy() ? SiteKind.DECOY : SiteKind.PLACEBO, pp.first(), pp.pairId, tick, pp);
+            Site sb = new Site(p.id(), p.name(), pp.firstIsDecoy() ? SiteKind.PLACEBO : SiteKind.DECOY, pp.second(), pp.pairId, tick, pp);
+            if (pp.consumed()) {
+                // 이미 한 번 증거에 쓰인 쌍: 미끼는 (일관성 때문에) 보이되 새 관측은 만들지 않는다. 노출되면 거둔다.
+                Site decoy = sa.kind == SiteKind.DECOY ? sa : sb;
+                decoy.result = pp.result();
+                tracker.add(decoy);
+            } else {
+                tracker.add(sa);
+                tracker.add(sb);
+            }
+        }
+    }
+
+    private void hideVoxels(UUID player, List<Voxel> vs) {
+        List<Pos> ps = new ArrayList<>(vs.size());
+        for (Voxel v : vs) {
+            ps.add(v.pos());
+        }
+        display.hide(player, ps);
+    }
+
+    // ---- 시뮬레이터·테스트용 한 번에 ----
+
+    /**
+     * 이 플레이어에게 청크 (cx, cz)가 전송됐다: 광맥 표본을 배우고, 패킷 시야로 쌍을 정해 미끼를 Display.show로 전달하고 추적에 올린다.
+     * 서버 플러그인은 이 함수 대신 prepareChunk/registerChunk를 쓴다.
      */
     public void onChunkSent(PlayerState p, int cx, int cz, long tick) {
         if (!p.eligible()) {
             return;
         }
-        BlockView view = views.apply(p.world());
-        if (view == null || !view.chunkLoaded(cx, cz)) {
+        BlockView live = views.apply(p.world());
+        if (live == null || !live.chunkLoaded(cx, cz)) {
             return;
         }
-        if (profile.wantsSamples()) {
-            VeinScanner.scanChunk(view, p.world(), cx, cz, params.yMin(), params.yMax(), profile);
-        }
-        // 이 청크에 시도할 쌍 수: pairsPerChunk의 정수부 + 소수부 확률로 하나 더.
-        double lambda = params.pairsPerChunk();
-        int tries = (int) Math.floor(lambda) + (rng.nextDouble() < lambda - Math.floor(lambda) ? 1 : 0);
-        for (int i = 0; i < tries; i++) {
-            if (tick < nextSpawn.getOrDefault(p.id(), 0L)
-                    || tracker.sitesOf(p.id()).size() + 2 > 2 * params.maxActivePairs()) {
-                return;
-            }
-            nextSpawn.put(p.id(), tick + params.cooldownTicks());
-            spawnPair(p, view, cx, cz, tick);
-        }
-    }
-
-    private void spawnPair(PlayerState p, BlockView view, int cx, int cz, long tick) {
-        List<List<Voxel>> taken = new ArrayList<>();
-        for (Site s : tracker.sitesOf(p.id())) {
-            taken.add(s.voxels);
-        }
-        List<Voxel> a = pick(view, p, cx, cz, taken);
-        if (a == null) {
+        learnChunk(p.world(), cx, cz);
+        ChunkPlan.Patch patch = prepareChunk(p.id(), p.world(), cx, cz, new ChunkOnlyView(live, cx, cz));
+        if (patch.isEmpty()) {
             return;
         }
-        taken.add(a);
-        List<Voxel> b = pick(view, p, cx, cz, taken);
-        if (b == null) {
-            return;
+        if (!patch.decoyVoxels().isEmpty()) {
+            display.show(p.id(), patch.decoyVoxels());
         }
-        // 안전 검사는 둘 다 통과해야 한다(한쪽만 통과해 쌍이 깨지면 종류 간 분포가 달라진다).
-        if (!sealedAll(view, a) || !sealedAll(view, b)) {
-            return;
-        }
-        boolean aDecoy = rng.nextBoolean(); // 동전 던지기
-        long pair = ++pairCounter;
-        Site sa = new Site(p.id(), p.name(), aDecoy ? SiteKind.DECOY : SiteKind.PLACEBO, a, pair, tick);
-        Site sb = new Site(p.id(), p.name(), aDecoy ? SiteKind.PLACEBO : SiteKind.DECOY, b, pair, tick);
-        register(sa, view);
-        register(sb, view);
-    }
-
-    private void register(Site s, BlockView view) {
-        tracker.add(s);
-        if (s.kind == SiteKind.DECOY) {
-            showGuarded(s, view);
-        }
-    }
-
-    /** 미끼가 나가는 유일한 길. 뭉치의 어느 블록이든 여섯 면이 다 막혀 있지 않으면 보내지 않고 자리를 없앤다. */
-    private void showGuarded(Site s, BlockView view) {
-        if (!sealedAll(view, s.voxels)) {
-            tracker.retire(s, Result.VOID, s.createdTick, false);
-            return;
-        }
-        display.show(s.player, s.voxels);
+        registerChunk(p, patch, tick);
     }
 
     static boolean sealedAll(BlockView view, List<Voxel> voxels) {
         for (Voxel v : voxels) {
             if (!DecoyGuard.sealed(view, v.pos())) {
                 return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * 같은 규칙으로 뭉치 하나를 고른다. 미끼와 위약이 같은 함수를 쓴다.
-     * 모양·크기·높이는 진짜 광맥 표본에서, 위치는 그 청크 안에서 균등하게 뽑고,
-     * 모든 블록이 돌 속·봉인 상태이며 진짜 다이아 광석과 붙어 있지 않아야 한다.
-     */
-    private List<Voxel> pick(BlockView view, PlayerState p, int cx, int cz, List<List<Voxel>> taken) {
-        double sep = params.minSeparation();
-        for (int i = 0; i < params.maxAttempts(); i++) {
-            VeinProfile.Placed pl = profile.draw(rng, params.yMin(), params.yMax());
-            int w = 0, h = 0, d = 0;
-            for (int[] c : pl.cells()) {
-                w = Math.max(w, c[0] + 1);
-                h = Math.max(h, c[1] + 1);
-                d = Math.max(d, c[2] + 1);
-            }
-            if (w > 16 || d > 16 || pl.y() < params.yMin() || pl.y() + h - 1 > params.yMax()) {
-                continue;
-            }
-            int ox = cx * 16 + rng.nextInt(17 - w), oz = cz * 16 + rng.nextInt(17 - d);
-            List<Voxel> voxels = new ArrayList<>(pl.cells().length);
-            boolean ok = true;
-            for (int[] c : pl.cells()) {
-                Pos pos = new Pos(p.world(), ox + c[0], pl.y() + c[1], oz + c[2]);
-                Host host = view.hostAt(pos.x(), pos.y(), pos.z());
-                if (host == null || !DecoyGuard.sealed(view, pos)) {
-                    ok = false;
-                    break;
-                }
-                voxels.add(new Voxel(pos, host));
-            }
-            if (!ok || touchesOre(view, voxels) || !farEnough(voxels, p) || !separated(voxels, taken, sep)) {
-                continue;
-            }
-            return voxels;
-        }
-        return null;
-    }
-
-    private static boolean touchesOre(BlockView view, List<Voxel> voxels) {
-        for (Voxel v : voxels) {
-            Pos q = v.pos();
-            for (int dx = -1; dx <= 1; dx++) {
-                for (int dy = -1; dy <= 1; dy++) {
-                    for (int dz = -1; dz <= 1; dz++) {
-                        if ((dx != 0 || dy != 0 || dz != 0) && view.isDiamondOre(q.x() + dx, q.y() + dy, q.z() + dz)) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        return false;
-    }
-
-    private boolean farEnough(List<Voxel> voxels, PlayerState p) {
-        for (Voxel v : voxels) {
-            if (v.pos().distanceTo(p.x(), p.y(), p.z()) < params.minDistance()) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean separated(List<Voxel> voxels, List<List<Voxel>> taken, double sep) {
-        for (List<Voxel> t : taken) {
-            for (Voxel a : voxels) {
-                for (Voxel b : t) {
-                    if (b.pos().distanceTo(a.pos().x() + 0.5, a.pos().y() + 0.5, a.pos().z() + 0.5) < sep) {
-                        return false;
-                    }
-                }
             }
         }
         return true;
@@ -266,7 +309,17 @@ public final class DecoyEngine {
 
     public void dropPlayer(UUID player, long tick, boolean restoreBlock) {
         tracker.dropPlayer(player, tick, restoreBlock);
-        nextSpawn.remove(player);
+    }
+
+    /** 플레이어가 나갔다: 추적과 계획 기억을 모두 지운다(다시 들어오면 같은 시드에서 같은 자리가 다시 계산된다). */
+    public void forgetPlayer(UUID player, long tick) {
+        tracker.dropPlayer(player, tick, false);
+        Map<ChunkPlan.Key, ChunkPlan> mine = plans.remove(player);
+        if (mine != null) {
+            synchronized (mine) {
+                mine.values().forEach(cp -> cp.pairs().forEach(pp -> pairsById.remove(pp.pairId)));
+            }
+        }
     }
 
     /** 서버가 청크를 내렸다. */
@@ -282,5 +335,51 @@ public final class DecoyEngine {
     /** 플러그인 종료·리로드 시: 모든 미끼를 진짜 블록으로 되돌린다. */
     public void shutdown(long tick) {
         tracker.dropAll(tick);
+    }
+
+    // ---- /anchor debug ----
+
+    /** 미끼·위약 한 자리의 상태. */
+    public record SiteDebug(SiteKind kind, Pos pos, int blocks, String status) {
+    }
+
+    /** 이 플레이어에게 계획된 모든 자리와 상태. 관리자 점검용이다. */
+    public List<SiteDebug> debugSites(UUID player) {
+        List<SiteDebug> out = new ArrayList<>();
+        Map<ChunkPlan.Key, ChunkPlan> mine = plans.get(player);
+        if (mine == null) {
+            return out;
+        }
+        List<ChunkPlan> snapshot;
+        synchronized (mine) {
+            snapshot = new ArrayList<>(mine.values());
+        }
+        for (ChunkPlan cp : snapshot) {
+            for (PlannedPair pp : cp.pairs()) {
+                out.add(debugOf(player, pp, SiteKind.DECOY, pp.decoy()));
+                out.add(debugOf(player, pp, SiteKind.PLACEBO, pp.placebo()));
+            }
+        }
+        return out;
+    }
+
+    private SiteDebug debugOf(UUID player, PlannedPair pp, SiteKind kind, List<Voxel> vs) {
+        String status = null;
+        for (Site s : tracker.sitesOf(player)) {
+            if (s.pairId == pp.pairId && s.kind == kind) {
+                status = s.result == null ? "활성" : "판정 완료(" + s.result + ", 화면 유지)";
+                break;
+            }
+        }
+        if (status == null) {
+            if (pp.retired()) {
+                status = "회수됨(다시 안 보냄)";
+            } else if (pp.consumed()) {
+                status = "판정 완료(" + pp.result() + ", 청크 밖: 다시 받으면 " + (kind == SiteKind.DECOY ? "미끼는 복원" : "새 관측 없음") + ")";
+            } else {
+                status = "대기(청크 밖: 다시 받으면 복원)";
+            }
+        }
+        return new SiteDebug(kind, vs.get(0).pos(), vs.size(), status);
     }
 }

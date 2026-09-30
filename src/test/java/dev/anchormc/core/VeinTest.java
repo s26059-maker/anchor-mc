@@ -137,7 +137,7 @@ class VeinTest {
     }
 
     private static Params veinParams() {
-        return new Params(3.0, 100_000, 100.0, 2.0, 0, 63, 6.0, 3, 0, 300, 1.0, 5000);
+        return new Params(3.0, 100_000, 100.0, 2.0, 0, 63, 300, 1.0, 5000);
     }
 
     @Test
@@ -263,7 +263,7 @@ class VeinTest {
         RandomGenerator r = rng(6);
         GridWorld w = GridWorld.solid(64); // 광석이 없다
         Recorder rec = new Recorder();
-        Params p = new Params(3.0, 100_000, 100.0, 2.0, 0, 63, 6.0, 3, 0, 300, 1.0, 300);
+        Params p = new Params(3.0, 100_000, 100.0, 2.0, 0, 63, 300, 1.0, 300);
         DecoyEngine e = new DecoyEngine(p, name -> w, rec, o -> { }, r);
         for (int i = 0; i < 300; i++) {
             PlayerState pl = new PlayerState(new UUID(2, i), "p" + i, W, 32, 32, 32, true);

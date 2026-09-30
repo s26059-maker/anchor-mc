@@ -24,15 +24,15 @@ class InvariantTest {
     }
 
     static Params params() {
-        // 작은 테스트 월드에 맞춘 값. 시간 창은 길게 둔다(만료가 아니라 회수를 시험한다). 청크마다 쌍을 시도하고 쿨다운은 없다.
-        return new Params(3.0, 100_000, 60.0, 2.0, 0, 63, 6.0, 3, 0, 300, 1.0, 0);
+        // 작은 테스트 월드에 맞춘 값. 시간 창은 길게 둔다(만료가 아니라 회수를 시험한다). 청크마다 쌍 하나를 시도한다.
+        return new Params(3.0, 100_000, 60.0, 2.0, 0, 63, 300, 1.0, 0);
     }
 
     /** show/hide를 기록하고, 그 순간의 월드 상태를 검사한다. 뭉치의 모든 블록을 검사한다. */
     static final class CheckingDisplay implements Display {
         final GridWorld world;
         final Set<Pos> shown = new HashSet<>();
-        int shows, hides, blocksShown;
+        int shows, hides, blocksShown, hiddenBlocks;
         /** hide 시점에 여전히 봉인돼 있으면(=노출 전 회수) true를 센다. */
         int hidesBeforeExposure;
 
@@ -46,7 +46,7 @@ class InvariantTest {
             for (Voxel v : voxels) {
                 // 불변식 1: 보내는 순간 뭉치의 모든 블록의 여섯 면이 전부 막혀 있어야 한다.
                 assertTrue(DecoyGuard.sealed(world, v.pos()), "노출 가능한 좌표에 미끼를 보냈다: " + v.pos());
-                assertTrue(shown.add(v.pos()), "이미 보낸 자리에 또 보냈다");
+                shown.add(v.pos()); // 같은 청크를 다시 받으면 같은 자리가 다시 나간다(멱등)
                 blocksShown++;
             }
             shows++;
@@ -56,6 +56,7 @@ class InvariantTest {
         public void hide(UUID player, List<Pos> positions) {
             for (Pos pos : positions) {
                 assertTrue(shown.remove(pos), "보낸 적 없는 자리를 거뒀다(위약에 되돌리기 발생)");
+                hiddenBlocks++;
                 if (DecoyGuard.sealed(world, pos)) {
                     hidesBeforeExposure++;
                 }
@@ -178,8 +179,7 @@ class InvariantTest {
                 assertNoVisibleDecoy(e, d, w);
             }
             assertTrue(d.hides > 0);
-            assertEquals(d.blocksShown, d.hidesBeforeExposure + d.shown.size(),
-                    "회수는 전부 노출 전에 이뤄져야 한다");
+            assertEquals(d.hiddenBlocks, d.hidesBeforeExposure, "회수는 전부 노출 전에 이뤄져야 한다");
         }
     }
 

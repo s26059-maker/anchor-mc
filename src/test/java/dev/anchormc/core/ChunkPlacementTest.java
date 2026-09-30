@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** 배치는 청크 전송 시점에만, 미끼는 그 호출 안에서 즉시. 언로드하면 정리. */
+/** 배치는 청크 전송(패킷) 시점에만, 미끼는 그 호출 안에서 즉시. 언로드하면 정리. */
 class ChunkPlacementTest {
     /** onChunkSent 호출 중에만 show가 불려야 한다. */
     static final class TimedDisplay implements Display {
@@ -72,18 +72,19 @@ class ChunkPlacementTest {
         for (int t = 1001; t < 3000; t++) {
             e.tick(p, t);
             e.verifyAll(t);
+            e.expire(t);
         }
         assertEquals(shows, d.shows, "시간이 흐르면서 새 미끼가 나왔다");
     }
 
     @Test
-    void engineSourceHasNoTimerBasedSpawnPath() throws Exception {
+    void engineSourceHasNoTimerBasedPlacementPath() throws Exception {
         String src = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/java/dev/anchormc/core/DecoyEngine.java"));
-        // spawnPair는 onChunkSent에서만 불린다.
-        long calls = src.lines().filter(l -> l.contains("spawnPair(")).count();
-        assertEquals(2, calls, "spawnPair는 정의 하나와 onChunkSent의 호출 하나뿐이어야 한다");
-        String tickBody = src.substring(src.indexOf("public void tick("), src.indexOf("public void onChunkSent("));
-        assertFalse(tickBody.contains("spawnPair"));
+        // 계획(planner.plan)은 planFor에서만, planFor는 prepareChunk에서만 불린다. tick()에는 배치가 없다.
+        assertEquals(1, src.lines().filter(l -> l.contains("planner.plan(")).count());
+        assertEquals(2, src.lines().filter(l -> l.contains("planFor(")).count(), "planFor는 정의 하나와 prepareChunk의 호출 하나");
+        String tickBody = src.substring(src.indexOf("public void tick("), src.indexOf("// ---- 광맥 표본 학습"));
+        assertFalse(tickBody.contains("prepareChunk") || tickBody.contains("planFor") || tickBody.contains("registerChunk"));
     }
 
     @Test
@@ -127,25 +128,6 @@ class ChunkPlacementTest {
     }
 
     @Test
-    void cooldownAndActivePairCapAreRespectedPerPlayer() {
-        RandomGenerator r = rng(24);
-        GridWorld w = GridWorld.solid(48);
-        Params cd = new Params(3.0, 100_000, 60.0, 2.0, 0, 63, 6.0, 3, 100, 300, 1.0, 0);
-        DecoyEngine e = new DecoyEngine(cd, name -> w, new TimedDisplay(), o -> { }, r);
-        PlayerState p = at(24, 24, 24);
-        InvariantTest.sendChunks(e, p, 0);
-        assertEquals(2, e.activeSites().size(), "쿨다운 안에서는 쌍이 하나만 생겨야 한다");
-        InvariantTest.sendChunks(e, p, 50);
-        assertEquals(2, e.activeSites().size());
-        InvariantTest.sendChunks(e, p, 100);
-        assertEquals(4, e.activeSites().size());
-        for (int t = 200; t < 2000; t += 100) {
-            InvariantTest.sendChunks(e, p, t);
-        }
-        assertTrue(e.activeSites().size() <= 6, "쌍 상한(3)을 넘었다: " + e.activeSites().size());
-    }
-
-    @Test
     void pairsHaveOneDecoyOneAndOnePlaceboSharingAPairId() {
         RandomGenerator r = rng(25);
         GridWorld w = GridWorld.solid(48);
@@ -159,5 +141,32 @@ class ChunkPlacementTest {
             assertEquals(2, same);
             assertEquals(1, decoys);
         }
+    }
+
+    @Test
+    void sendingTheSameChunkTwiceWithoutUnloadDoesNotDuplicateSites() {
+        RandomGenerator r = rng(26);
+        GridWorld w = GridWorld.solid(48);
+        DecoyEngine e = new DecoyEngine(params(), name -> w, new TimedDisplay(), o -> { }, r);
+        InvariantTest.sendChunks(e, at(24, 24, 24), 0);
+        int n = e.activeSites().size();
+        InvariantTest.sendChunks(e, at(24, 24, 24), 5);
+        assertEquals(n, e.activeSites().size());
+    }
+
+    @Test
+    void windowExpiryJudgesMissButKeepsTheDecoyOnScreen() {
+        RandomGenerator r = rng(27);
+        GridWorld w = GridWorld.solid(48);
+        List<Outcome> outs = new ArrayList<>();
+        TimedDisplay d = new TimedDisplay();
+        DecoyEngine e = new DecoyEngine(params(), name -> w, d, outs::add, r);
+        InvariantTest.sendChunks(e, at(24, 24, 24), 0);
+        int hides = d.hides;
+        e.expire(1_000_000);
+        assertTrue(outs.stream().allMatch(o -> o.result() == Result.MISS), "만료는 MISS여야 한다");
+        assertFalse(outs.isEmpty());
+        assertEquals(hides, d.hides, "시간이 지났다고 미끼를 화면에서 거두면 안 된다(사라지는 것이 단서가 된다)");
+        assertFalse(e.activeSites().isEmpty(), "판정이 끝나도 노출 회수를 위해 추적은 남아야 한다");
     }
 }
