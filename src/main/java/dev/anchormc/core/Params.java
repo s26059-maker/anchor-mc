@@ -17,7 +17,7 @@ public record Params(
         int profileSamples) {
 
     public static Params defaults() {
-        return new Params(3.0, 240 * 20L, 160.0, 2.0, -64, 16, 60, 1.0, 600);
+        return new Params(3.0, 240 * 20L, 160.0, 2.0, -64, 16, 60, 2.0, 600);
     }
 
     public Params {
