@@ -41,6 +41,15 @@ public final class PacketStateTable {
         });
     }
 
+    /** 회수 사유 기록용: 상태 번호의 블록 이름(모르면 번호). */
+    public String name(int globalId) {
+        try {
+            return WrappedBlockState.getByGlobalId(version, globalId).getType().getName();
+        } catch (RuntimeException e) {
+            return "알 수 없음(" + globalId + ")";
+        }
+    }
+
     /** 미끼로 넣을 블록 상태 번호(바탕이 돌이면 일반, 심층암이면 심층 다이아 광석). */
     public int decoyId(Host host) {
         return host == Host.DEEPSLATE ? deepslateOreId : stoneOreId;

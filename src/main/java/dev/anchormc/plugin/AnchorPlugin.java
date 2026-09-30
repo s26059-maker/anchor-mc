@@ -5,6 +5,7 @@ import dev.anchormc.AnchorCore;
 import dev.anchormc.core.BlockView;
 import dev.anchormc.core.DecoyEngine;
 import dev.anchormc.core.Params;
+import dev.anchormc.core.RetireCause;
 import dev.anchormc.core.SiteKind;
 import dev.anchormc.evidence.AsyncStore;
 import dev.anchormc.evidence.EvidenceEngine;
@@ -281,6 +282,24 @@ public final class AnchorPlugin extends JavaPlugin {
                 getConfig().getDouble("p0-multiplier", 2.0), st.confirmedAccounts(), core.voided(),
                 packetListener.patchedChunks(), packetListener.failures(),
                 core.decoys.profile().bankSize(), core.decoys.profile().usingBank() ? "표본 사용" : "바닐라 기본값 사용")));
+        s.sendMessage(Component.text(retireSummary()));
+    }
+
+    /** 사유별 회수 횟수(쌍 단위)와 지금 판단 보류 중인 활성 자리 수. 0인 사유는 뺀다. */
+    private String retireSummary() {
+        StringBuilder b = new StringBuilder("회수 사유별(쌍 단위): ");
+        int shown = 0;
+        for (var e : core.decoys.retireCounts().entrySet()) {
+            if (e.getValue() > 0) {
+                RetireCause c = e.getKey();
+                b.append(shown++ > 0 ? " | " : "").append(c.name()).append('(').append(c.label()).append(") ").append(e.getValue())
+                        .append(c.permanent() ? "" : " [계획 유지]");
+            }
+        }
+        if (shown == 0) {
+            b.append("아직 없음");
+        }
+        return b.append(" || 판단 보류 중인 활성 자리 ").append(core.decoys.heldSites()).toString();
     }
 
     /**
@@ -320,6 +339,7 @@ public final class AnchorPlugin extends JavaPlugin {
         List<DecoyEngine.SiteDebug> near = new ArrayList<>(all);
         near.sort(Comparator.comparingDouble(d -> d.pos().world().equals(at.getWorld().getName())
                 ? d.pos().distanceTo(at.getX(), at.getY(), at.getZ()) : Double.MAX_VALUE));
+        s.sendMessage(Component.text(retireSummary()));
         int shown = 0;
         for (DecoyEngine.SiteDebug d : near) {
             if (shown++ >= 40) {

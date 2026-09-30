@@ -67,6 +67,16 @@ final class PacketChunkView implements BlockView {
     }
 
     @Override
+    public String describe(int x, int y, int z) {
+        int s = sectionIndex(x, y, z);
+        if (s < 0 || sections[s] == null) {
+            return "블록=(패킷 밖)";
+        }
+        int id = sections[s].getBlockId(x & 15, (y - minY) & 15, z & 15);
+        return "블록=" + table.name(id) + (isStableOpaque(x, y, z) ? "" : "(불투명 아님)");
+    }
+
+    @Override
     public boolean chunkLoaded(int c1, int c2) {
         return c1 == cx && c2 == cz;
     }

@@ -27,6 +27,7 @@ import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.event.world.ChunkUnloadEvent;
 
 import java.util.List;
@@ -135,6 +136,12 @@ final class AnchorListener implements Listener {
     public void onChunkDropped(PlayerChunkUnloadEvent e) {
         engine.dropChunkFor(e.getPlayer().getUniqueId(), e.getChunk().getWorld().getName(),
                 e.getChunk().getX(), e.getChunk().getZ(), now());
+    }
+
+    /** 서버가 청크를 로드했다: 그 청크를 몰라 판단을 보류하던 이웃 자리가 실제로 노출됐는지 바로 다시 본다. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onServerChunkLoad(ChunkLoadEvent e) {
+        engine.onChunkLoaded(e.getWorld().getName(), e.getChunk().getX(), e.getChunk().getZ(), now());
     }
 
     @EventHandler

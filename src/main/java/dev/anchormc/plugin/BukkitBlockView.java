@@ -41,6 +41,13 @@ final class BukkitBlockView implements BlockView {
     }
 
     @Override
+    public String describe(int x, int y, int z) {
+        Material m = typeAt(x, y, z);
+        return m == null ? "블록=(읽을 수 없음: 월드 밖·청크 로드 안 됨)"
+                : "블록=" + m.name() + (m.isOccluding() ? "" : "(isOccluding=false)");
+    }
+
+    @Override
     public boolean chunkLoaded(int cx, int cz) {
         return world.isChunkLoaded(cx, cz);
     }
