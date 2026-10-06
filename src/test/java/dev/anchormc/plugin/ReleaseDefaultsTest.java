@@ -29,14 +29,16 @@ class ReleaseDefaultsTest {
 
     @Test
     void noRealSeedIsCommittedAnywhereInSource() throws Exception {
-        // 실서버 시험 등에서 쓴 진짜 시드가 소스(테스트 데이터 포함)에 들어가지 않게 한다: 64자리 16진수는 알려진 가짜 값만 허용.
-        String fake = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        // 실서버 시험 등에서 쓴 진짜 시드가 소스(테스트 데이터 포함)에 들어가지 않게 한다: 64자리 16진수는 알려진 값만 허용.
+        // 허용: 테스트용 가짜 시드, 공식 GPL-3.0 원문의 SHA-256(LicenseTest, 공개된 상수).
+        Set<String> allowed = Set.of("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986");
         Pattern hex64 = Pattern.compile("(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])");
         try (var files = Files.walk(Path.of("src"))) {
             for (Path f : files.filter(Files::isRegularFile).toList()) {
                 var m = hex64.matcher(Files.readString(f));
                 while (m.find()) {
-                    assertEquals(fake, m.group(), "진짜 시드로 보이는 64자리 16진수가 소스에 있다: " + f);
+                    assertTrue(allowed.contains(m.group()), "진짜 시드로 보이는 64자리 16진수가 소스에 있다: " + f);
                 }
             }
         }

@@ -3,6 +3,8 @@ version: ${version}
 main: dev.anchormc.plugin.AnchorPlugin
 api-version: "26.2"
 description: 가짜 광석 미끼 + 위약 대조 + e-value로 엑스레이 유저를 통계적으로 확정한다(섀도 모드). 미끼는 청크 데이터 패킷에 직접 넣는다.
+authors: [정성원]
+# 라이선스: GPL-3.0(저장소의 LICENSE). Copyright (C) 2026 정성원
 depend: [packetevents]
 libraries:
   - org.xerial:sqlite-jdbc:3.53.4.0
