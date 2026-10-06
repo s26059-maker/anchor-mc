@@ -25,11 +25,9 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -158,24 +156,13 @@ public final class AnchorPlugin extends JavaPlugin {
      */
     private byte[] secret() {
         String v = getConfig().getString("secret-seed", "");
-        if (v == null || v.isBlank()) {
-            byte[] fresh = new byte[32];
-            new SecureRandom().nextBytes(fresh);
-            v = HexFormat.of().formatHex(fresh);
+        if (SecretSeed.needsGeneration(v)) {
+            v = SecretSeed.generate();
             getConfig().set("secret-seed", v);
             saveConfig();
-            java.util.Arrays.fill(fresh, (byte) 0);
             getLogger().warning("secret-seed가 비어 있어 새로 만들어 config.yml에 저장했다(값은 출력하지 않는다). 이 값을 바꾸면 미끼 자리가 전부 바뀐다.");
         }
-        v = v.strip();
-        if (v.length() >= 32 && v.length() % 2 == 0 && v.chars().allMatch(c -> Character.digit(c, 16) >= 0)) {
-            return HexFormat.of().parseHex(v);
-        }
-        byte[] raw = v.getBytes(StandardCharsets.UTF_8);
-        if (raw.length < 16) {
-            throw new IllegalArgumentException("secret-seed는 16자 이상이어야 한다");
-        }
-        return raw;
+        return SecretSeed.toBytes(v);
     }
 
     /** 1초마다 위치 판정과 만료, 패킷 스레드가 읽는 플레이어 표 갱신. 새 자리는 여기서 만들지 않는다(청크 패킷에서만). */

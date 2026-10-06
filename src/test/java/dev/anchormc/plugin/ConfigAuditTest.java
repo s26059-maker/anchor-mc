@@ -80,7 +80,7 @@ class ConfigAuditTest {
             min-placebo-samples: 100
             confirm-rule: BOTH
             paired-alpha: 0.001
-            secret-seed: b93cef780c282068be8a65a5dd1b9362850eb7501408410314b7834b65dd2a28
+            secret-seed: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
             sites:
               y-min: -64
               y-max: 16
@@ -110,7 +110,7 @@ class ConfigAuditTest {
         String rule = w.stream().filter(s -> s.startsWith("confirm-rule이 기본값")).findFirst().orElseThrow();
         assertTrue(rule.contains("PAIRED") && rule.contains("BOTH"), rule);
         assertTrue(rule.contains("혼합 log10E ≥ 9.0 그리고 먼저 반응한 쪽 log10E ≥ 3.0"), "문턱 3.0의 출처가 보여야 한다: " + rule);
-        assertFalse(all.contains("b93cef78"), "비밀 시드 값이 메시지에 나왔다");
+        assertFalse(all.contains("00112233445566778899"), "비밀 시드 값이 메시지에 나왔다");
     }
 
     @Test
