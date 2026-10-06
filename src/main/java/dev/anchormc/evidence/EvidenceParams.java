@@ -11,7 +11,10 @@ public record EvidenceParams(double alpha, double p0Multiplier, int minPlaceboSa
     public static final double P0_FLOOR = 0.001;
     public static final double P0_CAP = 0.9;
 
-    /** MIXTURE: p0 기반 대안 혼합. PAIRED: 쌍 정확 검정만(문턱 1/alpha). BOTH: 혼합(1/alpha) 그리고 쌍 정확(1/pairedAlpha). */
+    /**
+     * MIXTURE: p0 기반 대안 혼합. PAIRED(기본): "먼저 반응한 쪽" 정확 검정만(문턱 1/alpha, 혼합은 확정에 안 씀).
+     * BOTH: 혼합(1/alpha) 그리고 먼저 반응한 쪽(1/pairedAlpha).
+     */
     public enum Rule { MIXTURE, PAIRED, BOTH }
 
     public EvidenceParams(double alpha, double p0Multiplier, int minPlaceboSamples) {
@@ -19,7 +22,7 @@ public record EvidenceParams(double alpha, double p0Multiplier, int minPlaceboSa
     }
 
     public static EvidenceParams defaults() {
-        return new EvidenceParams(1e-9, 2.0, 100, 1e-3, Rule.BOTH);
+        return new EvidenceParams(1e-9, 2.0, 100, 1e-3, Rule.PAIRED);
     }
 
     public EvidenceParams {

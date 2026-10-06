@@ -14,16 +14,17 @@ give-up-distance: 160.0
 # 이 거리보다 가까이 오면(정상 플레이에선 불가능) 판정 전이면 증거에서 제외하고 거둔다.
 retract-distance: 2.0
 
-# 혼합 e-value 확정 문턱은 E >= 1/alpha.
+# 확정 문턱은 E >= 1/alpha(PAIRED에서는 먼저 반응한 쪽 E, MIXTURE·BOTH에서는 혼합 E).
 alpha: 1.0e-9
 # p0 = (전체 위약 반응률) x 이 배수. 위약 반응이 0건이면 95% 상한에 곱한다.
 p0-multiplier: 2.0
 # 위약 관측이 이보다 적으면 p0를 상한(0.9)으로 두어 확정이 사실상 불가능하다.
 min-placebo-samples: 100
-# 확정 규칙. MIXTURE: p0 기반 대안 혼합만. PAIRED: 먼저 반응한 쪽 검정만(문턱 1/alpha).
-# BOTH(기본): 혼합 E가 1/alpha를 한 번이라도 넘었고, 먼저 반응한 쪽 E가 1/paired-alpha를 한 번이라도 넘음.
-# 플레이 방식별 정직 반응률 차이·반응 뭉침으로 혼합이 넘칠 때 먼저 반응한 쪽 검정이 막는다(오탐은 paired-alpha 이하로 정확히 묶인다).
-confirm-rule: BOTH
+# 확정 규칙. PAIRED(기본): 먼저 반응한 쪽 정확 검정만(문턱 1/alpha). 동전으로 정한 (미끼, 위약) 쌍에서 먼저 반응한 쪽이 미끼일 확률이
+# 귀무에서 정확히 1/2이라 p0 추정도 계정 내 독립도 필요 없다. 혼합 e-value는 /anchor status에 참고용으로만 보이고 확정에는 안 쓴다.
+# MIXTURE: p0 기반 대안 혼합만. BOTH: 혼합 E가 1/alpha, 먼저 반응한 쪽 E가 1/paired-alpha를 각각 한 번이라도 넘음(혼합은 p0 추정과
+# 자리 간 독립에 기대는 근사라 정직 오탐을 정확히 묶지 못한다. 3단계 수정으로 순서 부풀림은 없앴지만 검출력이 낮다).
+confirm-rule: PAIRED
 paired-alpha: 1.0e-3
 
 # 서버 비밀 시드. 어느 청크의 어디에 미끼가 있는지를 (플레이어, 청크, 이 시드)로 결정적으로 정한다.

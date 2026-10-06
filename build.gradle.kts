@@ -46,7 +46,9 @@ tasks.withType<JavaCompile> {
     options.release.set(25)
 }
 
+// sim 소스셋은 jar에 안 들어가서 test·build가 컴파일하지 않았다(문법 오류가 실행 때까지 안 잡혔다). test가 먼저 컴파일하게 해 build(check)에서도 잡힌다.
 tasks.test {
+    dependsOn(tasks.named("compileSimJava"))
     useJUnitPlatform()
     maxHeapSize = "1g"
     testLogging { events("failed"); showStandardStreams = false }

@@ -11,6 +11,7 @@ import dev.anchormc.evidence.AsyncStore;
 import dev.anchormc.evidence.EvidenceEngine;
 import dev.anchormc.evidence.EvidenceParams;
 import dev.anchormc.evidence.SqliteStore;
+import dev.anchormc.evidence.StatusText;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -188,9 +189,9 @@ public final class AnchorPlugin extends JavaPlugin {
 
     private void onConfirmed(EvidenceEngine.Confirmation c) {
         String msg = String.format(Locale.ROOT,
-                "[anchor-mc] 확정(섀도 모드, 처벌 없음): %s 미끼 %d/%d 위약 %d/%d log10E=%.1f p0=%.3f",
+                "[anchor-mc] 확정(섀도 모드, 처벌 없음): %s 미끼 %d/%d 위약 %d/%d 먼저 반응 log10E=%.1f (혼합 log10E=%.1f 참고용) p0=%.3f",
                 c.account().name, c.account().decoyHits, c.account().decoyN,
-                c.account().placeboHits, c.account().placeboN, c.account().log10E(), c.p0());
+                c.account().placeboHits, c.account().placeboN, c.account().log10EFirst(), c.account().log10E(), c.p0());
         getLogger().warning(msg);
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (p.hasPermission("anchor.alert")) {
@@ -277,17 +278,10 @@ public final class AnchorPlugin extends JavaPlugin {
         if (v == null) {
             return name + ": 기록 없음";
         }
-        return String.format(Locale.ROOT,
-                "%s | 미끼 %d/%d (%s) | 위약 %d/%d (%s) | log10E=%.2f (문턱 %.1f) | 쌍: 미끼만 %d 위약만 %d 둘다 %d 없음 %d log10E쌍=%.2f | 먼저 반응: 미끼 %d 위약 %d log10E=%.2f | %s",
-                v.name(), v.decoyHits(), v.decoyN(), pct(v.decoyRate()),
-                v.placeboHits(), v.placeboN(), pct(v.placeboRate()),
-                v.log10E(), -Math.log10(getConfig().getDouble("alpha", 1e-9)),
-                v.pairDecoyOnly(), v.pairPlaceboOnly(), v.pairBoth(), v.pairNeither(), v.log10EPaired(),
-                v.firstDecoy(), v.firstPlacebo(), v.log10EFirst(),
-                v.confirmed() ? "확정(섀도)" : "미확정");
+        return StatusText.format(v, readEvidenceParams(getConfig()));
     }
 
-    static boolean readAllowSpectator(FileConfiguration c) {
+static boolean readAllowSpectator(FileConfiguration c) {
         return c.getBoolean("debug.allow-spectator", false);
     }
 

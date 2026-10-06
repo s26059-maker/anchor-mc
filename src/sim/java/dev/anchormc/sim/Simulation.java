@@ -232,7 +232,7 @@ public final class Simulation {
         if (sections.contains("xray") && runs > 0) {
             long cap = (long) (minutes * 1200);
             System.out.printf(Locale.ROOT, "%n## 엑스레이(각 최대 %.0f분, p0는 위약 반응률로 계속 갱신, 정직 코호트 직후 p0=%.4f)%n", minutes, sim.core.evidence.currentP0());
-            System.out.println("확정 규칙: 혼합 = 대안 혼합 E ≥ 10^9. 쌍(한쪽만) = 1.1 정의 쌍 정확 E ≥ 10^9. 이중(BOTH, 기본 규칙) = 혼합 ≥ 10^9 그리고 먼저 반응한 쪽 E ≥ 10^3. 먼저 = 먼저 반응한 쪽 E ≥ 10^9. 시간은 채굴 시간(분): 중앙값(p90).");
+            System.out.println("확정 규칙: 혼합 = 대안 혼합 E ≥ 10^9. 쌍(한쪽만) = 1.1 정의 쌍 정확 E ≥ 10^9. 이중(BOTH) = 혼합 ≥ 10^9 그리고 먼저 반응한 쪽 E ≥ 10^3. 먼저 = 먼저 반응한 쪽 E ≥ 10^9(기본 규칙 PAIRED의 확정). 시간은 채굴 시간(분): 중앙값(p90).");
             System.out.println("| 전략 | 필터 | 경로 | 계정 | 혼합 확정 | 쌍(한쪽만) 확정 | 이중(BOTH) 확정 | 먼저 반응 확정 | 판정된 쌍 수(평균) | 재방문 청크(평균) | 미끼 반응률 | 위약 반응률 | 캔 진짜 광석 |");
             System.out.println("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
             record Strat(String name, double trust, int k) { }
