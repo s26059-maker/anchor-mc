@@ -172,6 +172,7 @@ final class SimTest {
         int steps;
         int broken;
         int targets;
+        int sealed;
         boolean done;
         /** honest-branch: 보이는 진짜 광석을 캐러 가는 끼어들기 동작과 이미 시도한 광석. 미끼·위약 정보는 전혀 안 쓴다(서버 월드의 실제 블록만 본다). */
         final boolean seeOres;
@@ -231,12 +232,13 @@ final class SimTest {
             if (!a.dig().isEmpty() && !a.dig().get(0).world().equals(w.getName())) {
                 return "월드가 바뀌었다";
             }
+            sealLiquids(p, a);
             for (Pos d : a.dig()) {
                 Block b = w.getBlockAt(d.x(), d.y(), d.z());
                 if (b.getType().isAir()) {
                     continue;
                 }
-                if (b.isLiquid() || b.getType().getHardness() < 0) {
+                if (b.getType().getHardness() < 0) {
                     return "부술 수 없는 블록(" + b.getType().getKey().getKey() + ") " + d.x() + "," + d.y() + "," + d.z();
                 }
                 if (!p.breakBlock(b) && !b.getType().isAir()) {
@@ -259,6 +261,21 @@ final class SimTest {
             return null;
         }
 
+        /**
+         * 가기 전에 경로 둘레의 물·용암을 막는다: 서 있을 칸의 액체는 치우고 나머지는 돌(Y<0이면 심층암)로 메운다. 걸음마다 하므로 흘러온 것도 따라잡는다.
+         * 블록 변경 이벤트·물리는 일으키지 않는다(액체였던 칸이 돌이 되는 것뿐이라 미끼 봉인에는 영향이 없다).
+         */
+        private void sealLiquids(Player p, SimRoute.Action a) {
+            World w = p.getWorld();
+            Pos cur = feetOf(p);
+            Pos dest = a.moveTo();
+            for (SimRoute.Seal s : SimRoute.sealPlan(q -> w.getBlockAt(q.x(), q.y(), q.z()).isLiquid(), cur, dest)) {
+                Material m = s.air() ? Material.AIR : s.pos().y() < 0 ? Material.DEEPSLATE : Material.STONE;
+                w.getBlockAt(s.pos().x(), s.pos().y(), s.pos().z()).setType(m, false);
+                sealed++;
+            }
+        }
+
         void finish(String why, boolean report) {
             if (done) {
                 return;
@@ -268,7 +285,7 @@ final class SimTest {
                 task.cancel();
             }
             runs.remove(id);
-            say(sender, name + ": " + what + " " + why + " | 이동 " + steps + "걸음, 부순 블록 " + broken + "개, " + (seeOres ? "캔 진짜 광석 " : "미끼 자리 채굴 ") + targets + (seeOres ? "개. " : "회. ")
+            say(sender, name + ": " + what + " " + why + " | 이동 " + steps + "걸음, 부순 블록 " + broken + "개, " + (seeOres ? "캔 진짜 광석 " : "미끼 자리 채굴 ") + targets + (seeOres ? "개" : "회") + ", 막은 액체 " + sealed + "칸. "
                     + (report ? (REPORT_DELAY / 20) + "초 뒤 /anchor status 요약" : ""));
             if (!report) {
                 return;

@@ -67,6 +67,7 @@ public final class AnchorPlugin extends JavaPlugin {
         }
         applyShadowMode(getConfig());
         applyDebugSpectator(getConfig());
+        auditConfig();
 
         if (!getDataFolder().exists() && !getDataFolder().mkdirs()) {
             getLogger().warning("데이터 폴더를 만들 수 없다");
@@ -414,6 +415,41 @@ static boolean readAllowSpectator(FileConfiguration c) {
         s.sendMessage(Component.text(name + ": 초기화했다(" + was + "). 미끼·위약 자리는 시드 그대로이며 청크를 다시 받으면 새 상태로 돌아온다"));
     }
 
+    /**
+     * 서버의 config.yml(파일 그대로)을 이 버전의 기본 파일과 견줘 예전·없는·모르는 키와 기본값에서 벗어난 확정 규칙을 콘솔에 경고하고,
+     * 지금 적용되는 확정 조건을 한 줄로 남는다. 경고 수를 돌려준다.
+     */
+    private int auditConfig() {
+        try {
+            java.io.File f = new java.io.File(getDataFolder(), "config.yml");
+            org.bukkit.configuration.file.YamlConfiguration file = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(f);
+            org.bukkit.configuration.file.YamlConfiguration def;
+            try (java.io.Reader r = new java.io.InputStreamReader(getResource("config.yml"), StandardCharsets.UTF_8)) {
+                def = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(r);
+            }
+            Map<String, Object> fm = leaves(file), dm = leaves(def);
+            List<String> warns = ConfigAudit.audit(fm, dm);
+            for (String w : warns) {
+                getLogger().warning("config.yml: " + w);
+            }
+            getLogger().info("확정 조건: " + ConfigAudit.describeRule(fm, dm));
+            return warns.size();
+        } catch (Exception e) {
+            getLogger().warning("config.yml 점검 실패(동작에는 영향 없음): " + e);
+            return 0;
+        }
+    }
+
+    private static Map<String, Object> leaves(org.bukkit.configuration.ConfigurationSection c) {
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        for (String k : c.getKeys(true)) {
+            if (!c.isConfigurationSection(k)) {
+                m.put(k, c.get(k));
+            }
+        }
+        return m;
+    }
+
     private void reload(CommandSender s) {
         reloadConfig();
         try {
@@ -421,7 +457,9 @@ static boolean readAllowSpectator(FileConfiguration c) {
             core.evidence.setParams(readEvidenceParams(getConfig()));
             applyShadowMode(getConfig());
             applyDebugSpectator(getConfig());
-            s.sendMessage(Component.text("설정을 다시 읽었다(secret-seed 변경은 서버를 다시 켜야 적용된다)"));
+            int warns = auditConfig();
+            s.sendMessage(Component.text("설정을 다시 읽었다(secret-seed 변경은 서버를 다시 켜야 적용된다)"
+                    + (warns > 0 ? ". config.yml 경고 " + warns + "건은 콘솔을 봐라" : "")));
         } catch (IllegalArgumentException e) {
             s.sendMessage(Component.text("config.yml 오류, 이전 설정 유지: " + e.getMessage()));
         }

@@ -2,8 +2,10 @@ package dev.anchormc.core;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * 실서버 자동 테스트(/anchor simtest)의 경로 계획. Bukkit을 모르는 순수 계산이라 단위 테스트가 된다.
@@ -149,6 +151,39 @@ public final class SimRoute {
         }
         for (int i = path.size() - 2; i >= 0; i--) {
             out.add(new Action(path.get(i), List.of(), false));
+        }
+        return out;
+    }
+
+    /** 액체 막기 범위: 걸음마다 도착 발 위치 기준 수평 ±SEAL_H, 수직 −SEAL_DOWN..+SEAL_UP(머리 위 한 칸 더)를 훑는다. */
+    public static final int SEAL_H = 2, SEAL_DOWN = 2, SEAL_UP = 3;
+
+    /** 막을 자리 하나. air면 플레이어가 서 있을 칸이라 돌이 아니라 공기로 바꾼다(돌로 막으면 몸이 박힌다). */
+    public record Seal(Pos pos, boolean air) {
+    }
+
+    /**
+     * 이 걸음에서 막을 액체: 도착(없으면 현재) 발 위치 둘레의 상자 안에서 액체인 모든 칸. 지금·도착 발/머리 칸의 액체는 공기로(서 있을 자리),
+     * 나머지(경로 앞·머리 위·옆·바닥)는 돌로 메운다. 이렇게 하면 경로 칸과 그 여섯 이웃에 액체가 없어서, 파낸 갱도로 흘러들 곳이 없다.
+     * 위치 열 순서는 결정적이다. 미끼·위약 정보를 받지 않는다.
+     */
+    public static List<Seal> sealPlan(Predicate<Pos> isLiquid, Pos curFeet, Pos destFeet) {
+        Pos at = destFeet != null ? destFeet : curFeet;
+        Set<Pos> open = new HashSet<>(List.of(curFeet, curFeet.offset(0, 1, 0)));
+        if (destFeet != null) {
+            open.add(destFeet);
+            open.add(destFeet.offset(0, 1, 0));
+        }
+        List<Seal> out = new ArrayList<>();
+        for (int y = -SEAL_DOWN; y <= SEAL_UP; y++) {
+            for (int x = -SEAL_H; x <= SEAL_H; x++) {
+                for (int z = -SEAL_H; z <= SEAL_H; z++) {
+                    Pos c = at.offset(x, y, z);
+                    if (isLiquid.test(c)) {
+                        out.add(new Seal(c, open.contains(c)));
+                    }
+                }
+            }
         }
         return out;
     }

@@ -206,4 +206,54 @@ class SimRouteTest {
         assertEquals(1, mines);
         assertEquals(START, cur, "원래 자리로 돌아와야 본 경로가 이어진다");
     }
+
+    // ---- 액체 막기 ----
+
+    private static java.util.function.Predicate<Pos> liquids(Pos... ps) {
+        java.util.Set<Pos> set = new java.util.HashSet<>(List.of(ps));
+        return set::contains;
+    }
+
+    @Test
+    void sealPlanFillsLiquidAroundThePathButOpensTheCellsThePlayerWillStandIn() {
+        Pos cur = new Pos(W, 0, 40, 0), dest = new Pos(W, 1, 40, 0);
+        Pos ahead = new Pos(W, 2, 40, 0), aboveHead = new Pos(W, 1, 42, 0), side = new Pos(W, 1, 40, 2), floor = new Pos(W, 1, 38, 0);
+        var plan = SimRoute.sealPlan(liquids(dest, dest.offset(0, 1, 0), cur, ahead, aboveHead, side, floor), cur, dest);
+        java.util.Map<Pos, Boolean> byPos = new java.util.HashMap<>();
+        plan.forEach(s -> byPos.put(s.pos(), s.air()));
+        assertEquals(7, plan.size());
+        assertTrue(byPos.get(dest) && byPos.get(dest.offset(0, 1, 0)) && byPos.get(cur), "서 있을 칸은 공기로(돌로 막으면 몸이 박힌다)");
+        assertFalse(byPos.get(ahead), "경로 앞의 액체는 돌로 메운다");
+        assertFalse(byPos.get(aboveHead), "머리 위의 액체도 막는다");
+        assertFalse(byPos.get(side), "옆의 액체도 막는다");
+        assertFalse(byPos.get(floor), "바닥 아래의 액체도 막는다");
+    }
+
+    @Test
+    void sealPlanIgnoresLiquidOutsideTheBoxAndReturnsNothingWhenDry() {
+        Pos cur = new Pos(W, 0, 40, 0), dest = new Pos(W, 1, 40, 0);
+        assertTrue(SimRoute.sealPlan(liquids(), cur, dest).isEmpty());
+        Pos farSide = dest.offset(SimRoute.SEAL_H + 1, 0, 0), tooHigh = dest.offset(0, SimRoute.SEAL_UP + 1, 0), tooLow = dest.offset(0, -SimRoute.SEAL_DOWN - 1, 0);
+        assertTrue(SimRoute.sealPlan(liquids(farSide, tooHigh, tooLow), cur, dest).isEmpty());
+        Pos edgeHigh = dest.offset(0, SimRoute.SEAL_UP, 0), edgeSide = dest.offset(0, 0, -SimRoute.SEAL_H);
+        assertEquals(2, SimRoute.sealPlan(liquids(edgeHigh, edgeSide), cur, dest).size());
+    }
+
+    @Test
+    void sealPlanForAMineActionAnchorsOnTheCurrentFeet() {
+        Pos cur = new Pos(W, 5, 40, 5);
+        var plan = SimRoute.sealPlan(liquids(cur.offset(1, 0, 0), cur.offset(0, 1, 0)), cur, null);
+        assertEquals(2, plan.size());
+        assertTrue(plan.stream().filter(s -> s.pos().equals(cur.offset(0, 1, 0))).findFirst().orElseThrow().air(), "머리 칸은 서 있는 곳");
+        assertFalse(plan.stream().filter(s -> s.pos().equals(cur.offset(1, 0, 0))).findFirst().orElseThrow().air());
+    }
+
+    @Test
+    void simTestNoLongerStopsOnLiquidAndSealsBeforeEveryAction() throws Exception {
+        String sim = Files.readString(Path.of("src/main/java/dev/anchormc/plugin/SimTest.java"));
+        assertFalse(sim.contains("b.isLiquid() ||"), "액체를 만나면 멈추던 검사가 남아 있다");
+        assertTrue(sim.contains("sealLiquids(p, a);"), "걸음마다 액체를 먼저 막아야 한다");
+        assertTrue(sim.indexOf("sealLiquids(p, a);") < sim.indexOf("p.breakBlock(b)"), "블록을 부수기 전에 막는다");
+        assertTrue(sim.contains("setType(m, false)"), "블록 물리·이벤트를 일으키지 않는다");
+    }
 }
