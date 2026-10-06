@@ -95,6 +95,17 @@ class ReleaseDefaultsTest {
     }
 
     @Test
+    void gitignoreCoversBuildServerDatabaseAndSecretFilesButKeepsTheWrapperJar() throws Exception {
+        java.util.List<String> lines = read(".gitignore").lines().map(String::strip).toList();
+        for (String must : new String[] {"build/", ".gradle/", ".claude/", "*.db", "*.db-wal", "*.db-shm", "*.jar", "/plugins/", "/AnchorMC/",
+                "server.properties", "eula.txt", ".env", "*.pem"}) {
+            assertTrue(lines.contains(must), ".gitignore에 " + must + "가 없다");
+        }
+        assertTrue(lines.contains("!gradle/wrapper/gradle-wrapper.jar"), "래퍼 jar는 예외로 남겨야 한다");
+        assertFalse(lines.contains("config.yml") || lines.contains("*.yml"), "기본 config.yml(소스의 템플릿)을 무시하면 안 된다");
+    }
+
+    @Test
     void versionIsOneZeroZeroAndPluginYmlTakesItFromTheBuild() throws Exception {
         assertTrue(read("build.gradle.kts").lines().anyMatch(l -> l.strip().equals("version = \"1.0.0\"")));
         assertTrue(read("src/main/resources/plugin.yml").lines().anyMatch(l -> l.strip().equals("version: ${version}")));

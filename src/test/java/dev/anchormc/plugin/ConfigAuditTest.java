@@ -68,7 +68,7 @@ class ConfigAuditTest {
         return flatten(Files.readString(Path.of("src/main/resources/config.yml")));
     }
 
-    /** 실서버(C:\mc-test)에서 본 예전 파일의 모양: config-version이 없고 confirm-rule이 BOTH. 지워진 키 하나를 일부러 넣었다. */
+    /** 실서버에서 본 예전 파일의 모양: config-version이 없고 confirm-rule이 BOTH. 지워진 키 하나를 일부러 넣었다. */
     private static final String OLD_SERVER = """
             shadow-mode: true
             reaction-radius: 3.0
