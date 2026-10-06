@@ -161,6 +161,16 @@ public final class SqliteStore implements EvidenceStore {
     }
 
     @Override
+    public synchronized void delete(UUID id) {
+        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM accounts WHERE uuid = ?")) {
+            ps.setString(1, id.toString());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
     public synchronized long[] placeboTotals() {
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery("SELECT COALESCE(SUM(placebo_n),0), COALESCE(SUM(placebo_hits),0) FROM accounts")) {

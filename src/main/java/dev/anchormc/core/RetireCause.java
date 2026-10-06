@@ -16,7 +16,8 @@ public enum RetireCause {
     LEFT_WORLD("월드 이동", false),
     QUIT("퇴장", false),
     CHUNK_DROPPED("청크 언로드(회수 아님, 노출 시간 정지)", false),
-    SHUTDOWN("플러그인 종료·리로드", false);
+    SHUTDOWN("플러그인 종료·리로드", false),
+    RESET("관리자 초기화(/anchor reset)", false);
 
     private final String label;
     private final boolean permanent;

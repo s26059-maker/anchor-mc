@@ -30,6 +30,11 @@ public final class MemoryStore implements EvidenceStore {
     }
 
     @Override
+    public synchronized void delete(UUID id) {
+        map.remove(id);
+    }
+
+    @Override
     public synchronized long[] placeboTotals() {
         long n = 0, h = 0;
         for (AccountRecord r : map.values()) {

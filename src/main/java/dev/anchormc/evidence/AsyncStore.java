@@ -43,6 +43,18 @@ public final class AsyncStore implements EvidenceStore {
         });
     }
 
+    /** 앞서 미룬 저장보다 먼저 지워지면 지운 기록이 되살아나므로 같은 쓰기 스레드에 줄 세운다. */
+    @Override
+    public void delete(UUID id) {
+        writer.execute(() -> {
+            try {
+                delegate.delete(id);
+            } catch (Throwable t) {
+                onError.accept(t);
+            }
+        });
+    }
+
     @Override
     public long[] placeboTotals() {
         return delegate.placeboTotals();

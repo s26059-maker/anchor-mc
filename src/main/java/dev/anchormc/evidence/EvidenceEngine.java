@@ -47,6 +47,8 @@ public final class EvidenceEngine {
     private final Map<Long, Pending> pending = new HashMap<>();
     /** 먼저 반응한 쪽이 이미 센 쌍(쌍당 한 번). */
     private final java.util.Set<Long> firstCounted = new java.util.HashSet<>();
+    /** 계정이 관여한 쌍 번호(초기화 때 그 계정의 대기·먼저 반응 기록을 지우려고). */
+    private final Map<UUID, java.util.Set<Long>> ownedPairs = new HashMap<>();
     private long placeboN;
     private long placeboHits;
 
@@ -95,6 +97,7 @@ public final class EvidenceEngine {
     /** 판정된 관측 하나. 이 호출로 새로 확정되면 그 정보를 돌려준다. pairId가 -1이면 쌍 검정에는 쓰지 않는다. */
     public Confirmation observe(UUID id, String name, boolean decoy, boolean hit, long pairId) {
         AccountRecord r = account(id, name);
+        own(id, pairId);
         double p0 = currentP0(); // 이 관측 이전의 데이터로만 정한다
         if (decoy) {
             Mixture.observe(r.logs, hit, p0);
@@ -158,6 +161,7 @@ public final class EvidenceEngine {
      */
     public Confirmation observeLateHit(UUID id, String name, boolean decoy, long pairId) {
         AccountRecord r = account(id, name);
+        own(id, pairId);
         countFirst(r, decoy, true, pairId);
         Confirmation out = null;
         if (!r.confirmed() && meetsRule(r)) {
@@ -166,6 +170,52 @@ public final class EvidenceEngine {
         }
         store.save(r);
         return out;
+    }
+
+    private void own(UUID id, long pairId) {
+        if (pairId != NO_PAIR) {
+            ownedPairs.computeIfAbsent(id, k -> new java.util.HashSet<>()).add(pairId);
+        }
+    }
+
+    /** 이름(대소문자 무시)으로 아는 계정의 uuid. 이미 본 계정을 먼저, 없으면 저장소. 없으면 null. */
+    public UUID idOf(String name) {
+        for (AccountRecord c : cache.values()) {
+            if (c.name.equalsIgnoreCase(name)) {
+                return c.id;
+            }
+        }
+        AccountRecord r = store.findByName(name);
+        return r == null ? null : r.id;
+    }
+
+    /**
+     * 관리자 초기화: 이 계정의 누적 기록(관측 수·e-value·쌍·먼저 반응·확정)을 저장소와 메모리에서 지운다.
+     * 이 계정의 위약 관측은 전체 위약 반응률(p0 추정)에서도 뺀다(재시작 때 저장소 합계로 다시 읽는 값과 같아지게).
+     * 이 계정의 쌍(관여한 것 + extraPairIds)의 대기·먼저 반응 기록도 지운다: 시드가 같아 같은 쌍이 다시 계획되면 새로 센다.
+     * 지운 기록의 스냅샷을 돌려준다(없었으면 null). 메인 스레드에서만 부른다.
+     */
+    public View resetPlayer(UUID id, java.util.Collection<Long> extraPairIds) {
+        AccountRecord r = cache.remove(id);
+        if (r == null) {
+            r = store.load(id);
+        }
+        if (r != null) {
+            placeboN -= r.placeboN;
+            placeboHits -= r.placeboHits;
+            store.delete(id);
+        }
+        java.util.Set<Long> mine = ownedPairs.remove(id);
+        if (mine != null) {
+            mine.forEach(this::forgetPair);
+        }
+        extraPairIds.forEach(this::forgetPair);
+        return r == null ? null : toView(r);
+    }
+
+    private void forgetPair(long pairId) {
+        pending.remove(pairId);
+        firstCounted.remove(pairId);
     }
 
     /** 쌍의 한쪽이 판정 없이(VOID) 거둬졌다: 이 쌍은 쌍 검정에서 뺀다. */

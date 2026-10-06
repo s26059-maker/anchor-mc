@@ -65,6 +65,15 @@ public final class AnchorCore {
         });
     }
 
+    /**
+     * 플레이어 한 명의 판정 기록(저장소 포함)·누적 e-value·반응 기록·화면의 미끼를 모두 초기화한다. 배치는 시드 그대로라 같은 자리가 새로 계획된다.
+     * 지워진 계정 기록의 스냅샷을 돌려준다(기록이 없었으면 null). 메인 스레드에서 부른다.
+     */
+    public EvidenceEngine.View resetPlayer(java.util.UUID id, long tick) {
+        java.util.List<Long> pairs = decoys.resetPlayer(id, tick);
+        return evidence.resetPlayer(id, pairs);
+    }
+
     /** 판정 전에 거둬 증거에서 뺀 자리 수. */
     public int voided() {
         return voided;

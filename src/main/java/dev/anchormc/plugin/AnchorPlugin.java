@@ -32,6 +32,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 
 public final class AnchorPlugin extends JavaPlugin {
     private AnchorCore core;
@@ -238,7 +239,7 @@ public final class AnchorPlugin extends JavaPlugin {
 
     // ---- 명령어 ----
 
-    private static final String USAGE = "/anchor status <플레이어> | stats | debug <플레이어> | simtest <플레이어> xray <개수>|honest <블록수> | reload";
+    private static final String USAGE = "/anchor status <플레이어> | stats | debug <플레이어> | simtest <플레이어> xray <개수>|honest <블록수> | reset <플레이어> | reload";
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -255,6 +256,7 @@ public final class AnchorPlugin extends JavaPlugin {
             case "stats" -> stats(sender);
             case "debug" -> debug(sender, args);
             case "simtest" -> simTest.command(sender, args);
+            case "reset" -> reset(sender, args);
             case "reload" -> reload(sender);
             default -> sender.sendMessage(Component.text(USAGE));
         }
@@ -392,6 +394,31 @@ public final class AnchorPlugin extends JavaPlugin {
         }
     }
 
+    /**
+     * 그 플레이어의 판정 기록(SQLite 포함)·누적 e-value·반응 기록을 전부 지운다. 확인 없이 바로 실행하고 콘솔에 남긴다.
+     * 미끼·위약 자리는 시드가 같아 그대로다: 화면의 미끼는 되돌리고 계획을 비우며, 청크를 다시 받으면 같은 좌표가 새 상태로 돌아온다.
+     */
+    private void reset(CommandSender s, String[] args) {
+        if (args.length < 2) {
+            s.sendMessage(Component.text("/anchor reset <플레이어>"));
+            return;
+        }
+        Player online = Bukkit.getPlayerExact(args[1]);
+        UUID id = online != null ? online.getUniqueId() : core.evidence.idOf(args[1]);
+        if (id == null) {
+            s.sendMessage(Component.text(args[1] + ": 기록 없음(접속 중도 아니고 저장된 기록도 없다)"));
+            return;
+        }
+        String name = online != null ? online.getName() : args[1];
+        EvidenceEngine.View old = core.resetPlayer(id, now());
+        String was = old == null ? "지울 누적 기록 없음" : String.format(Locale.ROOT,
+                "지운 기록: 미끼 %d/%d 위약 %d/%d log10E=%.2f%s", old.decoyHits(), old.decoyN(), old.placeboHits(), old.placeboN(),
+                old.log10E(), old.confirmed() ? " 확정됨" : "");
+        getLogger().warning(String.format(Locale.ROOT, "[anchor-mc] /anchor reset: %s가 %s(%s)의 판정 기록·e-value·반응 기록을 초기화했다. %s",
+                s.getName(), name, id, was));
+        s.sendMessage(Component.text(name + ": 초기화했다(" + was + "). 미끼·위약 자리는 시드 그대로이며 청크를 다시 받으면 새 상태로 돌아온다"));
+    }
+
     private void reload(CommandSender s) {
         reloadConfig();
         try {
@@ -413,12 +440,12 @@ public final class AnchorPlugin extends JavaPlugin {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
-            for (String o : List.of("status", "stats", "debug", "simtest", "reload")) {
+            for (String o : List.of("status", "stats", "debug", "simtest", "reset", "reload")) {
                 if (o.startsWith(args[0].toLowerCase(Locale.ROOT))) {
                     out.add(o);
                 }
             }
-        } else if (args.length == 2 && (args[0].equalsIgnoreCase("status") || args[0].equalsIgnoreCase("debug") || args[0].equalsIgnoreCase("simtest"))) {
+        } else if (args.length == 2 && (args[0].equalsIgnoreCase("status") || args[0].equalsIgnoreCase("debug") || args[0].equalsIgnoreCase("simtest") || args[0].equalsIgnoreCase("reset"))) {
             for (Player p : Bukkit.getOnlinePlayers()) {
                 if (p.getName().toLowerCase(Locale.ROOT).startsWith(args[1].toLowerCase(Locale.ROOT))) {
                     out.add(p.getName());

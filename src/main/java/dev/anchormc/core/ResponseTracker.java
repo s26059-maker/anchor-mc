@@ -208,6 +208,19 @@ public final class ResponseTracker {
         }
     }
 
+    /**
+     * 관리자 초기화: 이 플레이어의 자리를 판정 없이(증거에 아무것도 내지 않고) 모두 거두고 화면의 미끼를 되돌린다. 위치 기억도 지운다.
+     */
+    void resetPlayer(UUID player, long tick) {
+        List<Site> list = byPlayer.get(player);
+        if (list != null) {
+            for (Site s : new ArrayList<>(list)) {
+                retire(s, null, tick, true, new Reason(RetireCause.RESET, "", tick));
+            }
+        }
+        forgetPosition(player);
+    }
+
     /** 플레이어가 나갔다: 판정 전이던 자리는 증거에서 뺀다(VOID). */
     public void dropPlayerFinal(UUID player, long tick) {
         List<Site> list = byPlayer.get(player);

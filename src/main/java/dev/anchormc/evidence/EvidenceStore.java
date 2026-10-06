@@ -12,6 +12,9 @@ public interface EvidenceStore extends AutoCloseable {
 
     void save(AccountRecord record);
 
+    /** 계정 기록을 지운다(없으면 아무것도 안 한다). */
+    void delete(UUID id);
+
     /** 전체 위약 관측 수와 반응 수: {n, hits}. */
     long[] placeboTotals();
 

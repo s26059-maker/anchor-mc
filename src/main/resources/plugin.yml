@@ -9,11 +9,11 @@ libraries:
 commands:
   anchor:
     description: anchor-mc 관리 명령
-    usage: /anchor status <플레이어> | stats | debug <플레이어> | simtest <플레이어> xray <개수>|honest <블록수> | reload
+    usage: /anchor status <플레이어> | stats | debug <플레이어> | simtest <플레이어> xray <개수>|honest <블록수> | reset <플레이어> | reload
     permission: anchor.admin
 permissions:
   anchor.admin:
-    description: /anchor 명령 사용(debug는 미끼 좌표를 보여 준다)
+    description: /anchor 명령 사용(debug는 미끼 좌표를 보여 주고, reset은 플레이어 기록을 지운다)
     default: op
   anchor.alert:
     description: 확정 알림 수신

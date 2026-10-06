@@ -537,6 +537,24 @@ public final class DecoyEngine {
         }
     }
 
+    /**
+     * 관리자 초기화(/anchor reset): 이 플레이어의 자리를 판정 없이 거두고(화면의 미끼는 되돌린다) 계획·쌍 상태·반응 기록을 모두 버린다.
+     * 시드가 같아 청크를 다시 받으면 같은 좌표에 같은 쌍이 새 상태로 다시 계획된다. 판정 로직은 건드리지 않는다.
+     * 버린 쌍 번호를 돌려준다(증거 엔진이 그 쌍의 대기·먼저 반응 기록을 지우는 데 쓴다). 메인 스레드에서 부른다.
+     */
+    public List<Long> resetPlayer(UUID player, long tick) {
+        List<Long> ids = new ArrayList<>();
+        Map<ChunkPlan.Key, ChunkPlan> mine = plans.get(player);
+        if (mine != null) {
+            synchronized (mine) {
+                mine.values().forEach(cp -> cp.pairs().forEach(pp -> ids.add(pp.pairId)));
+            }
+        }
+        tracker.resetPlayer(player, tick);
+        forgetPlayer(player, tick); // 추적은 이미 비어 있다. 정지 목록·계획·쌍 표를 지운다
+        return ids;
+    }
+
     /** 서버가 청크를 내렸다. */
     public void dropChunk(String world, int cx, int cz, long tick) {
         tracker.dropChunk(world, cx, cz, tick);
