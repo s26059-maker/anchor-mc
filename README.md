@@ -1,3 +1,5 @@
+[![build](https://github.com/s26059-maker/anchor-mc/actions/workflows/build.yml/badge.svg)](https://github.com/s26059-maker/anchor-mc/actions/workflows/build.yml)
+
 # anchor-mc
 
 **Paper 서버용 엑스레이 탐지 플러그인(섀도 모드).** 플레이어마다 가짜 다이아 광석 미끼를 보여 주고, 미끼와 "아무것도 안 보여 주는 대조 자리(위약)"에 대한 반응을 비교해서

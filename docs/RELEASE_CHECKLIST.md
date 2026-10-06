@@ -8,6 +8,7 @@
 - [x] 기본 `config.yml`에 `secret-seed` 값이 없고(`""`), 소스에 64자리 16진수 시드 문자열이 없다(`ReleaseDefaultsTest`).
 - [x] 기본값: 섀도 모드, `confirm-rule: PAIRED`, `debug.allow-spectator: false`. 처벌 동작(킥·밴 호출) 코드 없음(테스트가 검사).
 - [x] `./gradlew build` 통과(단위 테스트 + 시뮬레이터 컴파일).
+- [x] GitHub Actions(`.github/workflows/build.yml`): push/PR마다 gradle wrapper 검증 → Java 25 빌드(테스트 포함) → 성공하면 jar를 artifact로 업로드. 저장소를 올린 뒤 첫 실행이 초록인지 확인한다.
 - [x] 라이선스 **GPL-3.0**: `LICENSE` 추가, 저작권자 정성원, README·`plugin.yml` 표기(테스트가 확인). 사이트 입력란에도 **GPL-3.0**(-only)을 고른다. PacketEvents의 라이선스와 호환되는지 한 번 더 확인.
 - [x] `plugin.yml`에 `authors: [정성원]` 추가. `website`(소스 저장소 주소)는 저장소를 공개할 때 추가(선택).
 - [ ] **소스 저장소를 공개한다면** 지난 커밋 기록에 실서버 시험용 `secret-seed` 값이 한 번 들어갔는지 확인(`git log -S<값>`). 있으면 그 서버의 시드를 새로 바꾸거나 기록을 정리한 뒤 공개.

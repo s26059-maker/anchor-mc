@@ -106,6 +106,22 @@ class ReleaseDefaultsTest {
     }
 
     @Test
+    void ciWorkflowValidatesTheWrapperBuildsWithJava25AndUploadsTheJar() throws Exception {
+        String wf = read(".github/workflows/build.yml");
+        assertTrue(wf.contains("push:") && wf.contains("pull_request:"), "push와 PR에서 돌아야 한다");
+        int validate = wf.indexOf("gradle/actions/wrapper-validation");
+        int build = wf.indexOf("./gradlew build");
+        int upload = wf.indexOf("actions/upload-artifact");
+        assertTrue(validate > 0 && build > validate, "래퍼 검증이 gradlew 실행보다 먼저여야 한다");
+        assertTrue(wf.contains("java-version: '25'"), "Java 25로 빌드");
+        assertTrue(upload > build && wf.contains("build/libs/anchor-mc-*.jar"), "빌드 뒤에 jar를 올린다");
+        assertTrue(wf.contains("contents: read"), "최소 권한");
+        String readme = read("README.md");
+        assertTrue(readme.lines().findFirst().orElse("").contains("github.com/s26059-maker/anchor-mc/actions/workflows/build.yml/badge.svg"),
+                "README 맨 위에 빌드 배지가 있어야 한다");
+    }
+
+    @Test
     void versionIsOneZeroZeroAndPluginYmlTakesItFromTheBuild() throws Exception {
         assertTrue(read("build.gradle.kts").lines().anyMatch(l -> l.strip().equals("version = \"1.0.0\"")));
         assertTrue(read("src/main/resources/plugin.yml").lines().anyMatch(l -> l.strip().equals("version: ${version}")));
