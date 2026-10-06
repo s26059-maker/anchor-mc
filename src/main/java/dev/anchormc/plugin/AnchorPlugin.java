@@ -39,6 +39,7 @@ public final class AnchorPlugin extends JavaPlugin {
     private BukkitTask spawnTask;
     private BukkitTask verifyTask;
     private PacketDecoyListener packetListener;
+    private SimTest simTest;
     private final PlayerRegistry registry = new PlayerRegistry();
     private final Map<String, BlockView> views = new HashMap<>();
 
@@ -73,6 +74,7 @@ public final class AnchorPlugin extends JavaPlugin {
         core = new AnchorCore(params, ep, this::viewOf, new BukkitDisplay(), store,
                 secret, System::currentTimeMillis, this::onConfirmed);
         java.util.Arrays.fill(secret, (byte) 0);
+        simTest = new SimTest(this, registry, core.decoys, this::statusText);
 
         getServer().getPluginManager().registerEvents(new AnchorListener(core.decoys, registry, this), this);
         for (Player p : Bukkit.getOnlinePlayers()) {
@@ -90,6 +92,9 @@ public final class AnchorPlugin extends JavaPlugin {
     public void onDisable() {
         if (packetListener != null && PacketEvents.getAPI() != null) {
             PacketEvents.getAPI().getEventManager().unregisterListener(packetListener);
+        }
+        if (simTest != null) {
+            simTest.cancelAll();
         }
         if (spawnTask != null) {
             spawnTask.cancel();
@@ -233,7 +238,7 @@ public final class AnchorPlugin extends JavaPlugin {
 
     // ---- 명령어 ----
 
-    private static final String USAGE = "/anchor status <플레이어> | stats | debug <플레이어> | reload";
+    private static final String USAGE = "/anchor status <플레이어> | stats | debug <플레이어> | simtest <플레이어> xray <개수>|honest <블록수> | reload";
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -249,6 +254,7 @@ public final class AnchorPlugin extends JavaPlugin {
             case "status" -> status(sender, args);
             case "stats" -> stats(sender);
             case "debug" -> debug(sender, args);
+            case "simtest" -> simTest.command(sender, args);
             case "reload" -> reload(sender);
             default -> sender.sendMessage(Component.text(USAGE));
         }
@@ -260,19 +266,22 @@ public final class AnchorPlugin extends JavaPlugin {
             s.sendMessage(Component.text("/anchor status <플레이어>"));
             return;
         }
-        EvidenceEngine.View v = core.evidence.view(args[1]);
+        s.sendMessage(Component.text(statusText(args[1])));
+    }
+
+    private String statusText(String name) {
+        EvidenceEngine.View v = core.evidence.view(name);
         if (v == null) {
-            s.sendMessage(Component.text(args[1] + ": 기록 없음"));
-            return;
+            return name + ": 기록 없음";
         }
-        s.sendMessage(Component.text(String.format(Locale.ROOT,
+        return String.format(Locale.ROOT,
                 "%s | 미끼 %d/%d (%s) | 위약 %d/%d (%s) | log10E=%.2f (문턱 %.1f) | 쌍: 미끼만 %d 위약만 %d 둘다 %d 없음 %d log10E쌍=%.2f | 먼저 반응: 미끼 %d 위약 %d log10E=%.2f | %s",
                 v.name(), v.decoyHits(), v.decoyN(), pct(v.decoyRate()),
                 v.placeboHits(), v.placeboN(), pct(v.placeboRate()),
                 v.log10E(), -Math.log10(getConfig().getDouble("alpha", 1e-9)),
                 v.pairDecoyOnly(), v.pairPlaceboOnly(), v.pairBoth(), v.pairNeither(), v.log10EPaired(),
                 v.firstDecoy(), v.firstPlacebo(), v.log10EFirst(),
-                v.confirmed() ? "확정(섀도)" : "미확정")));
+                v.confirmed() ? "확정(섀도)" : "미확정");
     }
 
     static boolean readAllowSpectator(FileConfiguration c) {
@@ -404,15 +413,21 @@ public final class AnchorPlugin extends JavaPlugin {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
-            for (String o : List.of("status", "stats", "debug", "reload")) {
+            for (String o : List.of("status", "stats", "debug", "simtest", "reload")) {
                 if (o.startsWith(args[0].toLowerCase(Locale.ROOT))) {
                     out.add(o);
                 }
             }
-        } else if (args.length == 2 && (args[0].equalsIgnoreCase("status") || args[0].equalsIgnoreCase("debug"))) {
+        } else if (args.length == 2 && (args[0].equalsIgnoreCase("status") || args[0].equalsIgnoreCase("debug") || args[0].equalsIgnoreCase("simtest"))) {
             for (Player p : Bukkit.getOnlinePlayers()) {
                 if (p.getName().toLowerCase(Locale.ROOT).startsWith(args[1].toLowerCase(Locale.ROOT))) {
                     out.add(p.getName());
+                }
+            }
+        } else if (args.length == 3 && args[0].equalsIgnoreCase("simtest")) {
+            for (String o : List.of("xray", "honest")) {
+                if (o.startsWith(args[2].toLowerCase(Locale.ROOT))) {
+                    out.add(o);
                 }
             }
         }
