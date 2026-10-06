@@ -90,10 +90,11 @@ class LateHitTest {
         AnchorCore core = new AnchorCore(oneShotParams(), new EvidenceParams(1e-9, 2.0, 100), name -> w, new Quiet(),
                 new MemoryStore(), r, () -> 1L, c -> { });
         core.decoys.onChunkSent(at(24, 24, 24), 1, 1, 0);
-        core.decoys.expire(5000); // 양쪽 MISS
+        core.expire(5000); // 양쪽 MISS
         Site placebo = core.decoys.activeSites().stream().filter(s -> s.kind == SiteKind.PLACEBO).findFirst().orElseThrow();
         double[] p = approach(placebo);
         core.decoys.onMove(PLAYER, W, p[0], p[1], p[2], 6000);
+        core.expire(6000); // 다음 1초 틱이 창 끝 순서로 증거에 넣는다
         var v = core.evidence.viewOf(PLAYER);
         assertEquals(0, v.firstDecoy());
         assertEquals(1, v.firstPlacebo(), "창이 끝난 뒤의 첫 반응도 먼저 반응한 쪽으로 센다");
@@ -104,6 +105,7 @@ class LateHitTest {
         Site decoy = core.decoys.activeSites().stream().filter(s -> s.kind == SiteKind.DECOY).findFirst().orElseThrow();
         double[] q = approach(decoy);
         core.decoys.onMove(PLAYER, W, q[0], q[1], q[2], 7000);
+        core.expire(7000);
         v = core.evidence.viewOf(PLAYER);
         assertEquals(0, v.firstDecoy());
         assertEquals(1, v.firstPlacebo());

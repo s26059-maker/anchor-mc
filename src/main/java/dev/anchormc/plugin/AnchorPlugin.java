@@ -105,6 +105,7 @@ public final class AnchorPlugin extends JavaPlugin {
         }
         if (core != null) {
             core.decoys.shutdown(now()); // 모든 미끼를 진짜 블록으로 되돌린다
+            core.releaseAll(); // 창 끝을 기다리던 판정도 저장소에 넣는다
         }
         registry.clear();
         if (store != null) {
@@ -182,7 +183,7 @@ public final class AnchorPlugin extends JavaPlugin {
             registry.update(p);
             core.decoys.tick(registry.stateOf(p), tick);
         }
-        core.decoys.expire(tick);
+        core.expire(tick);
     }
 
     private void onConfirmed(EvidenceEngine.Confirmation c) {
@@ -239,7 +240,7 @@ public final class AnchorPlugin extends JavaPlugin {
 
     // ---- 명령어 ----
 
-    private static final String USAGE = "/anchor status <플레이어> | stats | debug <플레이어> | simtest <플레이어> xray <개수>|honest <블록수> | reset <플레이어> | reload";
+    private static final String USAGE = "/anchor status <플레이어> | stats | debug <플레이어> | simtest <플레이어> xray <개수>|honest <블록수>|honest-branch <본갱도 블록수> | reset <플레이어> | reload";
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -452,7 +453,7 @@ public final class AnchorPlugin extends JavaPlugin {
                 }
             }
         } else if (args.length == 3 && args[0].equalsIgnoreCase("simtest")) {
-            for (String o : List.of("xray", "honest")) {
+            for (String o : List.of("xray", "honest", "honest-branch")) {
                 if (o.startsWith(args[2].toLowerCase(Locale.ROOT))) {
                     out.add(o);
                 }

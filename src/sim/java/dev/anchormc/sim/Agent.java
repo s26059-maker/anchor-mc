@@ -265,7 +265,7 @@ abstract class Agent {
         while (tick >= nextEngineTick) {
             engineTick = nextEngineTick;
             core.decoys.tick(state(), engineTick);
-            core.decoys.expire(engineTick);
+            core.expire(engineTick);
             core.decoys.verifyAll(engineTick);
             poll();
             nextEngineTick += 20;

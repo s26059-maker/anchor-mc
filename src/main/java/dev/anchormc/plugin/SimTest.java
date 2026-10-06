@@ -6,6 +6,7 @@ import dev.anchormc.core.SimRoute;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.command.CommandSender;
@@ -14,11 +15,15 @@ import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 
@@ -35,6 +40,8 @@ final class SimTest {
     static final long REPORT_DELAY = 40;
     static final int MAX_COUNT = 50;
     static final int MAX_BLOCKS = 256;
+    /** honest-branch: 본갱도 최대 길이와 곁가지 길이. */
+    static final int MAX_MAIN = 90, BRANCH_LEN = 12;
 
     private final Plugin plugin;
     private final PlayerRegistry registry;
@@ -77,7 +84,7 @@ final class SimTest {
 
     void command(CommandSender s, String[] args) {
         if (args.length < 4) {
-            say(s, "/anchor simtest <플레이어> xray <개수> | honest <블록수>");
+            say(s, "/anchor simtest <플레이어> xray <개수> | honest <블록수> | honest-branch <본갱도 블록수>");
             return;
         }
         Player p = Bukkit.getPlayerExact(args[1]);
@@ -86,14 +93,16 @@ final class SimTest {
             return;
         }
         String mode = args[2].toLowerCase(Locale.ROOT);
-        if (!mode.equals("xray") && !mode.equals("honest")) {
-            say(s, "모드는 xray 또는 honest");
+        if (!mode.equals("xray") && !mode.equals("honest") && !mode.equals("honest-branch")) {
+            say(s, "모드는 xray, honest, honest-branch");
             return;
         }
         boolean xray = mode.equals("xray");
-        Integer n = parseCount(args[3], xray ? MAX_COUNT : MAX_BLOCKS);
+        boolean branch = mode.equals("honest-branch");
+        int max = xray ? MAX_COUNT : branch ? MAX_MAIN : MAX_BLOCKS;
+        Integer n = parseCount(args[3], max);
         if (n == null) {
-            say(s, "<" + (xray ? "개수" : "블록수") + ">는 1~" + (xray ? MAX_COUNT : MAX_BLOCKS) + " 정수");
+            say(s, "<" + (xray ? "개수" : branch ? "본갱도 블록수" : "블록수") + ">는 1~" + max + " 정수");
             return;
         }
         if (runs.containsKey(p.getUniqueId())) {
@@ -115,15 +124,35 @@ final class SimTest {
             }
             plan = SimRoute.xray(feet, picked.stream().map(DecoyEngine.SiteDebug::pos).toList());
             what = "xray 미끼 " + picked.size() + "개(요청 " + n + ")";
+        } else if (branch) {
+            int[] d = cardinal(p.getLocation().getYaw());
+            plan = SimRoute.branch(feet, d[0], d[1], n, BRANCH_LEN);
+            what = "honest-branch 본갱도 " + n + "블록 + " + SimRoute.BRANCH_SPACING + "블록 간격 곁가지 " + BRANCH_LEN + "블록(방향 " + d[0] + "," + d[1] + "), 보이는 진짜 광석은 캐러 감";
         } else {
             int[] d = cardinal(p.getLocation().getYaw());
             plan = SimRoute.straight(feet, d[0], d[1], n);
             what = "honest 직진 " + n + "블록(방향 " + d[0] + "," + d[1] + ")";
         }
         say(s, p.getName() + ": " + what + ", " + plan.size() + "동작, " + STEP_TICKS + "틱 간격으로 시작");
-        Run run = new Run(s, p.getUniqueId(), p.getName(), what, plan);
+        Run run = new Run(s, p.getUniqueId(), p.getName(), what, plan, branch);
         runs.put(p.getUniqueId(), run);
         run.task = Bukkit.getScheduler().runTaskTimer(plugin, run, 1L, STEP_TICKS);
+    }
+
+    /** 서버 월드의 실제 블록만 읽는다: 미끼는 클라이언트에만 있어 여기에 보이지 않는다. */
+    private static SimRoute.Terrain terrain(World w) {
+        return new SimRoute.Terrain() {
+            @Override
+            public boolean isDiamondOre(Pos p) {
+                Material m = w.getBlockAt(p.x(), p.y(), p.z()).getType();
+                return m == Material.DIAMOND_ORE || m == Material.DEEPSLATE_DIAMOND_ORE;
+            }
+
+            @Override
+            public boolean isAir(Pos p) {
+                return w.getBlockAt(p.x(), p.y(), p.z()).getType().isAir();
+            }
+        };
     }
 
     void cancelAll() {
@@ -144,8 +173,13 @@ final class SimTest {
         int broken;
         int targets;
         boolean done;
+        /** honest-branch: 보이는 진짜 광석을 캐러 가는 끼어들기 동작과 이미 시도한 광석. 미끼·위약 정보는 전혀 안 쓴다(서버 월드의 실제 블록만 본다). */
+        final boolean seeOres;
+        final Deque<SimRoute.Action> detour = new ArrayDeque<>();
+        final Set<Pos> tried = new HashSet<>();
 
-        Run(CommandSender sender, UUID id, String name, String what, List<SimRoute.Action> plan) {
+        Run(CommandSender sender, UUID id, String name, String what, List<SimRoute.Action> plan, boolean seeOres) {
+            this.seeOres = seeOres;
             this.sender = sender;
             this.id = id;
             this.name = name;
@@ -162,6 +196,20 @@ final class SimTest {
             }
             if (!registry.stateOf(p).eligible()) {
                 finish("판정 대상에서 빠져 중단(게임모드 변경·사망 등)", true);
+                return;
+            }
+            if (seeOres && detour.isEmpty() && next < plan.size()) {
+                Pos ore = SimRoute.nearestExposedOre(terrain(p.getWorld()), feetOf(p), tried);
+                if (ore != null) {
+                    tried.add(ore);
+                    detour.addAll(SimRoute.detour(feetOf(p), ore));
+                }
+            }
+            if (!detour.isEmpty()) {
+                String err = execute(p, detour.poll());
+                if (err != null) {
+                    detour.clear(); // 못 캐는 광석은 건너뛰고 원래 길로 계속한다
+                }
                 return;
             }
             if (next >= plan.size()) {
@@ -220,7 +268,7 @@ final class SimTest {
                 task.cancel();
             }
             runs.remove(id);
-            say(sender, name + ": " + what + " " + why + " | 이동 " + steps + "걸음, 부순 블록 " + broken + "개, 미끼 자리 채굴 " + targets + "회. "
+            say(sender, name + ": " + what + " " + why + " | 이동 " + steps + "걸음, 부순 블록 " + broken + "개, " + (seeOres ? "캔 진짜 광석 " : "미끼 자리 채굴 ") + targets + (seeOres ? "개. " : "회. ")
                     + (report ? (REPORT_DELAY / 20) + "초 뒤 /anchor status 요약" : ""));
             if (!report) {
                 return;

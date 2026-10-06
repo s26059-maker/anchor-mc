@@ -34,6 +34,7 @@ public final class Simulation {
     private final List<SimWorld> worlds = new ArrayList<>();
     private final long seed;
     private SimWorld current;
+    private Diag diag;
 
     record Run(String strategy, long[] cross, double simMinutes, int decoyN, int decoyHits, int placeboN, int placeboHits,
                double maxMix, double maxPair, double maxFirst, int pD, int pP, int pB, int pN, int oresMined, int revisits) {
@@ -74,6 +75,10 @@ public final class Simulation {
         Function<String, BlockView> views = name -> current;
         this.core = new AnchorCore(params, ep, views, display, new MemoryStore(), rng(seed, 999, 0), () -> 1L, c -> { });
         RandomGenerator wr = rng(seed, 777, 0);
+        if (diagOn) {
+            diag = new Diag();
+            diag.attach(core);
+        }
         for (int i = 0; i < 6; i++) {
             worlds.add(SimWorld.generate(wr));
         }
@@ -99,6 +104,7 @@ public final class Simulation {
     }
 
     private double agentMinutes;
+    private static boolean diagOn, noHold;
     /** 행 나누기: 여러 프로세스가 같은 행 목록에서 (행 번호 % groups == group)인 행만 돌린다. 행마다 난수열이 행 번호로 정해져 나눠 돌려도 결과가 같다. */
     private static int groups = 1, group = 0;
 
@@ -106,6 +112,9 @@ public final class Simulation {
         RandomGenerator r = rng(seed, strategyIdx, runIdx);
         current = worlds.get(runIdx % worlds.size()).copy();
         UUID id = new UUID(strategyIdx, runIdx);
+        if (diag != null && strategyIdx < 10) {
+            diag.label.put(id, label);
+        }
         Agent a = f.make(current, core, id, label + "-" + runIdx, r, randomAir(current, r));
         agents.put(id, a);
         a.run(capTicks);
@@ -164,6 +173,7 @@ public final class Simulation {
                 case "--rows" -> rows = v;
                 case "--reroll" -> reroll = true;
                 case "--no-ybalance" -> ybalance = false;
+                case "--no-hold" -> noHold = true;
                 case "--window" -> windowSec = Long.parseLong(v);
                 case "--groups" -> groups = Integer.parseInt(v);
                 case "--group" -> group = Integer.parseInt(v);
@@ -174,14 +184,16 @@ public final class Simulation {
         Params params = new Params(d.reactionRadius(), windowSec * 20, d.giveUpDistance(), d.retractDistance(),
                 d.yMin(), d.yMax(), d.maxAttempts(), ppc, d.profileSamples());
         EvidenceParams ep = EvidenceParams.defaults();
+        diagOn = sections.contains("diag");
         Simulation sim = new Simulation(seed, params, ep);
         sim.core.decoys.setConsistentRevisit(!reroll);
         sim.core.decoys.setHeightBalance(ybalance);
+        sim.core.holdUntilWindowEnd = !noHold;
         long t0 = System.currentTimeMillis();
 
-        System.out.printf(Locale.ROOT, "설정: 반경 r=%.1f, 창 %ds, 청크당 쌍 %.2f, α=%.0e, p0 배수 %.1f, seed=%d, 재방문 %s, 높이 보정 %s%n",
+        System.out.printf(Locale.ROOT, "설정: 반경 r=%.1f, 창 %ds, 청크당 쌍 %.2f, α=%.0e, p0 배수 %.1f, seed=%d, 재방문 %s, 높이 보정 %s, 증거 순서 %s%n",
                 params.reactionRadius(), params.windowTicks() / 20, params.pairsPerChunk(), ep.alpha(), ep.p0Multiplier(), seed,
-                reroll ? "매번 새로 뽑기(1.1 방식 대조군)" : "결정적(같은 자리)", ybalance ? "켬" : "끔");
+                reroll ? "매번 새로 뽑기(1.1 방식 대조군)" : "결정적(같은 자리)", ybalance ? "켬" : "끔", noHold ? "판정이 나온 순서(수정 전)" : "창 끝 순서(수정 후)");
         System.out.printf(Locale.ROOT, "월드 %dx%dx%d(y -64..15, %dx%d청크) x6종, 청크 반경 %d(%d청크), 채굴 비용 이동 %d틱/블록 + 굴착 %d틱/블록. 미끼는 청크 데이터에 삽입%n%n",
                 SimWorld.SX, SimWorld.SZ, SimWorld.SY, SimWorld.CX, SimWorld.CZ, Agent.R, (2 * Agent.R + 1) * (2 * Agent.R + 1),
                 Agent.MOVE_TICKS, Agent.DIG_TICKS);
@@ -203,6 +215,9 @@ public final class Simulation {
                     sim.core.decoys.profile().bankSize(), sim.core.decoys.profile().usingBank());
             printHonest(honestRuns);
             System.out.println();
+            if (sim.diag != null) {
+                sim.diag.report(ep);
+            }
             if (sections.contains("net")) {
                 printNet(honestRuns.size(), sim.agentMinutes);
             }

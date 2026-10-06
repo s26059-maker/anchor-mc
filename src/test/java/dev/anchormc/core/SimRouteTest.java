@@ -8,6 +8,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SimRouteTest {
@@ -111,5 +112,98 @@ class SimRouteTest {
         assertFalse(sim.contains("debugSites") && sim.contains("PLACEBO"), "러너가 위약을 직접 다루지 않는다");
         String yml = Files.readString(Path.of("src/main/resources/plugin.yml"));
         assertTrue(yml.contains("permission: anchor.admin"));
+    }
+
+    // ---- honest-branch ----
+
+    @Test
+    void branchPlanIsMainTunnelWithThreeBlockSpacedAlternatingSideBranchesAndOneBlockSteps() {
+        int main = 9, len = 5;
+        var acts = SimRoute.branch(START, 1, 0, main, len);
+        Pos cur = START;
+        int branches = 0, mainSteps = 0;
+        Pos lastMain = START;
+        int lastSide = 0;
+        for (var a : acts) {
+            assertFalse(a.mine());
+            assertEquals(1, SimRoute.manhattan(cur, a.moveTo()), "한 걸음은 1블록");
+            if (a.moveTo().z() == lastMain.z() && a.moveTo().x() == lastMain.x() + 1 && a.moveTo().z() == START.z()) {
+                mainSteps++;
+                lastMain = a.moveTo();
+                assertEquals(List.of(a.moveTo(), a.moveTo().offset(0, 1, 0)), a.dig());
+            } else if (a.moveTo().z() != START.z() && !a.dig().isEmpty()) {
+                int side = Integer.signum(a.moveTo().z() - START.z());
+                if (lastSide != side) {
+                    branches++;
+                    assertTrue(lastSide == 0 || lastSide == -side, "곁가지는 좌우를 번갈아 간다");
+                    lastSide = side;
+                }
+                assertEquals(lastMain.x(), a.moveTo().x(), "곁가지는 본갱도에 수직");
+            }
+            cur = a.moveTo();
+        }
+        assertEquals(main, mainSteps);
+        assertEquals(main / SimRoute.BRANCH_SPACING, branches, "본갱도 3블록마다 곁가지 하나");
+        assertEquals(new Pos(W, START.x() + main, START.y(), START.z()), cur, "마지막은 본갱도 위");
+        // 곁가지로 나갔다 온 길은 이미 판 공기라 부수지 않는다.
+        assertEquals(branches * len, acts.stream().filter(a -> a.moveTo().z() != START.z() && !a.dig().isEmpty()).count());
+        assertEquals(branches * len, acts.stream().filter(a -> a.dig().isEmpty()).count());
+        for (var m : SimRoute.class.getDeclaredMethods()) {
+            if (m.getName().equals("branch")) {
+                for (var t : m.getParameterTypes()) {
+                    assertFalse(List.class.isAssignableFrom(t), "branch는 자리 정보를 받지 않는다");
+                }
+            }
+        }
+    }
+
+    private static final class Fake implements SimRoute.Terrain {
+        final java.util.Set<Pos> ores = new java.util.HashSet<>();
+        final java.util.Set<Pos> air = new java.util.HashSet<>();
+
+        @Override
+        public boolean isDiamondOre(Pos p) {
+            return ores.contains(p);
+        }
+
+        @Override
+        public boolean isAir(Pos p) {
+            return air.contains(p);
+        }
+    }
+
+    @Test
+    void onlyAirExposedNearbyRealOresAreChosenNearestFirstAndSkipListIsHonored() {
+        Fake t = new Fake();
+        Pos buried = new Pos(W, 2, 40, 0), near = new Pos(W, 3, 40, 1), far = new Pos(W, 5, 40, 3), tooFar = new Pos(W, 6, 40, 6);
+        t.ores.addAll(List.of(buried, near, far, tooFar));
+        assertNull(SimRoute.nearestExposedOre(t, START, java.util.Set.of()), "공기에 안 닿은 광석은 안 보인다");
+        t.air.add(far.offset(0, 1, 0));
+        t.air.add(tooFar.offset(1, 0, 0));
+        assertEquals(far, SimRoute.nearestExposedOre(t, START, java.util.Set.of()));
+        t.air.add(near.offset(1, 0, 0));
+        assertEquals(near, SimRoute.nearestExposedOre(t, START, java.util.Set.of()), "더 가까운 보이는 광석이 먼저");
+        assertEquals(far, SimRoute.nearestExposedOre(t, START, java.util.Set.of(near)), "이미 시도한 광석은 건너뛴다");
+        assertNull(SimRoute.nearestExposedOre(t, START, java.util.Set.of(near, far)), "맨해튼 거리 상한(DETOUR_MAX) 밖은 안 간다");
+    }
+
+    @Test
+    void detourMinesTheOreThenWalksBackToExactlyWhereItStarted() {
+        Pos ore = new Pos(W, 4, 41, -3);
+        var acts = SimRoute.detour(START, ore);
+        Pos cur = START;
+        int mines = 0;
+        for (var a : acts) {
+            if (a.moveTo() != null) {
+                assertEquals(1, SimRoute.manhattan(cur, a.moveTo()), "한 걸음은 1블록");
+                cur = a.moveTo();
+            } else {
+                assertTrue(a.mine());
+                assertEquals(List.of(ore), a.dig());
+                mines++;
+            }
+        }
+        assertEquals(1, mines);
+        assertEquals(START, cur, "원래 자리로 돌아와야 본 경로가 이어진다");
     }
 }

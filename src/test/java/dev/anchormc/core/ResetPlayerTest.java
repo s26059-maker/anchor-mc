@@ -115,7 +115,7 @@ class ResetPlayerTest {
         Site decoy = core.decoys.activeSites().stream().filter(s -> s.kind == SiteKind.DECOY).findFirst().orElseThrow();
         double[] p = approach(decoy);
         core.decoys.onMove(PLAYER, W, p[0], p[1], p[2], 10); // 미끼 HIT
-        core.decoys.expire(5000); // 위약 MISS(창 종료)
+        core.expire(5000); // 위약 MISS(창 종료)
         var v = core.evidence.view("tester");
         assertNotNull(v);
         assertEquals(1, v.decoyHits());
@@ -136,7 +136,7 @@ class ResetPlayerTest {
         Site decoy2 = core.decoys.activeSites().stream().filter(s -> s.kind == SiteKind.DECOY).findFirst().orElseThrow();
         assertEquals(decoy.pairId, decoy2.pairId);
         core.decoys.onMove(PLAYER, W, p[0], p[1], p[2], 7010);
-        core.decoys.expire(20000);
+        core.expire(20000);
         var v2 = core.evidence.view("tester");
         assertEquals(1, v2.decoyN());
         assertEquals(1, v2.decoyHits());

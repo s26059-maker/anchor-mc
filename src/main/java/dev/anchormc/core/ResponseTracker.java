@@ -270,7 +270,7 @@ public final class ResponseTracker {
 
     /** 이 클래스가 종류(kind)를 읽는 유일한 곳: 그대로 Hooks로 넘길 뿐이다. */
     private void emit(Site s, Result r, long tick) {
-        hooks.outcome(new Outcome(s.player, s.playerName, s.kind, r, tick, s.pos, s.pairId));
+        hooks.outcome(new Outcome(s.player, s.playerName, s.kind, r, tick, s.pos, s.pairId, s.createdTick + params.windowTicks()));
     }
 
     private static <K> void remove(Map<K, List<Site>> m, K key, Site s) {
